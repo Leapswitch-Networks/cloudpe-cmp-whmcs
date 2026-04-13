@@ -2,6 +2,13 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.2] - 2026-04-13
+
+### Fixed
+- **Auto-updater was writing files but serving old code**: PHP OPcache is now invalidated for every PHP file the installer writes (plus `opcache_reset()` at the end). Previously, files were updated on disk but OPcache continued to serve the old bytecode, making it look like the update didn't apply.
+- Installer now pre-checks that module directories are writable and reports per-file copy failures instead of silently succeeding. The "Module updated successfully" message was being returned even when `copy()` failed.
+- The Updates tab now shows a per-install diagnostic: files written, files failed, OPcache entries cleared, and the first failure reason. Makes permission/opcache issues visible at a glance.
+
 ## [1.0.1] - 2026-04-13
 
 ### Fixed

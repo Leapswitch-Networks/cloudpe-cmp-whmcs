@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.1');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.2');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -162,6 +162,16 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
   $tmpFile = tempnam(sys_get_temp_dir(), 'cloudpe_cmp_update_') . '.zip';
   $tmpDir  = sys_get_temp_dir() . '/cloudpe_cmp_update_' . time();
 
+  // Per-file stats so we can report back exactly what happened; this
+  // makes silent failures (e.g. permission denied, opcache lock)
+  // debuggable from the WHMCS admin UI.
+  $stats = [
+    'files_written' => 0,
+    'files_failed'  => 0,
+    'opcache_invalidated' => 0,
+    'failures'      => [],
+  ];
+
   try {
     // Download ZIP
     $ch = curl_init($downloadUrl);
@@ -210,23 +220,58 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
 
     $whmcsRoot = dirname(dirname(dirname(dirname(__DIR__))));
 
+    // Pre-check: ensure destinations are writable. Silent copy()
+    // failures were the primary cause of "Update successful but old
+    // version still showing" in v1.0.1.
+    $dstServer = $whmcsRoot . '/modules/servers/cloudpe_cmp';
+    $dstAddon  = $whmcsRoot . '/modules/addons/cloudpe_cmp_admin';
+    foreach ([$dstServer, $dstAddon] as $dir) {
+      if (is_dir($dir) && !is_writable($dir)) {
+        throw new \Exception("Module directory is not writable by the web server: {$dir}. Fix ownership/permissions and retry.");
+      }
+    }
+
     // Copy server module
     $srcServer = $modulesRoot . '/servers/cloudpe_cmp';
-    $dstServer = $whmcsRoot . '/modules/servers/cloudpe_cmp';
     if (is_dir($srcServer)) {
-      cloudpe_cmp_admin_copy_directory($srcServer, $dstServer);
+      cloudpe_cmp_admin_copy_directory($srcServer, $dstServer, $stats);
     }
 
     // Copy addon module
     $srcAddon = $modulesRoot . '/addons/cloudpe_cmp_admin';
-    $dstAddon = $whmcsRoot . '/modules/addons/cloudpe_cmp_admin';
     if (is_dir($srcAddon)) {
-      cloudpe_cmp_admin_copy_directory($srcAddon, $dstAddon);
+      cloudpe_cmp_admin_copy_directory($srcAddon, $dstAddon, $stats);
     }
 
-    return ['success' => true, 'message' => 'Module updated successfully. Please refresh the page.'];
+    // Nuke PHP OPcache so the next request sees the freshly-written
+    // files. Without this, the old bytecode keeps being served and
+    // the UI continues to show the previous version even though the
+    // files on disk are new.
+    if (function_exists('opcache_reset')) {
+      @opcache_reset();
+    }
+
+    if ($stats['files_failed'] > 0) {
+      return [
+        'success' => false,
+        'message' => 'Update partially failed. '
+          . $stats['files_written'] . ' file(s) written, '
+          . $stats['files_failed'] . ' failed. '
+          . 'First failure: ' . ($stats['failures'][0] ?? 'unknown'),
+        'stats'   => $stats,
+      ];
+    }
+
+    return [
+      'success' => true,
+      'message' => 'Module updated successfully ('
+        . $stats['files_written'] . ' files written, '
+        . $stats['opcache_invalidated'] . ' opcache entries cleared). '
+        . 'Please refresh the page.',
+      'stats'   => $stats,
+    ];
   } catch (\Exception $e) {
-    return ['success' => false, 'message' => $e->getMessage()];
+    return ['success' => false, 'message' => $e->getMessage(), 'stats' => $stats];
   } finally {
     if (file_exists($tmpFile)) {
       @unlink($tmpFile);
@@ -238,13 +283,27 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
 /**
  * Recursively copy a directory.
  *
- * @param string $src Source directory path
- * @param string $dst Destination directory path
+ * Tracks per-file success/failure in $stats and invalidates PHP's
+ * OPcache for any `.php` file written so the next request actually
+ * executes the new code.
+ *
+ * @param string $src    Source directory path
+ * @param string $dst    Destination directory path
+ * @param array  $stats  Tally: files_written, files_failed, opcache_invalidated, failures[]
  */
-function cloudpe_cmp_admin_copy_directory(string $src, string $dst): void
+function cloudpe_cmp_admin_copy_directory(string $src, string $dst, array &$stats = []): void
 {
+  if (!isset($stats['files_written']))       $stats['files_written'] = 0;
+  if (!isset($stats['files_failed']))        $stats['files_failed']  = 0;
+  if (!isset($stats['opcache_invalidated'])) $stats['opcache_invalidated'] = 0;
+  if (!isset($stats['failures']))            $stats['failures']      = [];
+
   if (!is_dir($dst)) {
-    mkdir($dst, 0755, true);
+    if (!@mkdir($dst, 0755, true)) {
+      $stats['files_failed']++;
+      $stats['failures'][] = "mkdir failed: $dst";
+      return;
+    }
   }
 
   $items = new RecursiveIteratorIterator(
@@ -255,11 +314,29 @@ function cloudpe_cmp_admin_copy_directory(string $src, string $dst): void
   foreach ($items as $item) {
     $target = $dst . DIRECTORY_SEPARATOR . $items->getSubPathName();
     if ($item->isDir()) {
-      if (!is_dir($target)) {
-        mkdir($target, 0755, true);
+      if (!is_dir($target) && !@mkdir($target, 0755, true)) {
+        $stats['files_failed']++;
+        $stats['failures'][] = "mkdir failed: $target";
+      }
+      continue;
+    }
+
+    // File: copy with explicit success check. @ suppress because we
+    // surface failures via $stats rather than PHP warnings.
+    if (@copy($item->getPathname(), $target)) {
+      $stats['files_written']++;
+      // Invalidate opcache entry for the just-written PHP file so
+      // the next request picks up the new code. Without this, a
+      // successful copy is useless on servers with OPcache enabled.
+      if (substr($target, -4) === '.php' && function_exists('opcache_invalidate')) {
+        if (@opcache_invalidate($target, true)) {
+          $stats['opcache_invalidated']++;
+        }
       }
     } else {
-      copy($item->getPathname(), $target);
+      $stats['files_failed']++;
+      $err = error_get_last();
+      $stats['failures'][] = "copy failed: {$target}" . ($err ? " ({$err['message']})" : '');
     }
   }
 }
@@ -2060,10 +2137,26 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
       $.post(moduleUrl, { action: 'install_update', download_url: downloadUrl }, function(resp) {
         $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Install Update');
         var msg = $('#install-msg');
+        msg.removeClass('alert-success alert-danger').empty();
+        // Render per-file diagnostics so silent copy/opcache issues
+        // surface directly in the UI.
+        var detail = '';
+        if (resp.stats) {
+          detail = ' (' + resp.stats.files_written + ' written, '
+            + resp.stats.files_failed + ' failed, '
+            + resp.stats.opcache_invalidated + ' opcache cleared)';
+          if (resp.stats.failures && resp.stats.failures.length) {
+            detail += '<br><small>' + resp.stats.failures.slice(0, 5).map(function(f){
+              return $('<span>').text(f).html();
+            }).join('<br>') + '</small>';
+          }
+        }
         if (resp.success) {
-          msg.text(resp.message).removeClass('alert-danger').addClass('alert alert-success').show();
+          msg.html($('<span>').text(resp.message).html() + detail)
+             .addClass('alert alert-success').show();
         } else {
-          msg.text(resp.message || 'Update failed.').removeClass('alert-success').addClass('alert alert-danger').show();
+          msg.html($('<span>').text(resp.message || 'Update failed.').html() + detail)
+             .addClass('alert alert-danger').show();
         }
       }, 'json').fail(function() {
         $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Install Update');

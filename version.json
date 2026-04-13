@@ -1,16 +1,12 @@
 {
-    "version": "1.0.1",
+    "version": "1.0.2",
     "released": "2026-04-13",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.1/cloudpe-cmp-whmcs-module-v1.0.1.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.2/cloudpe-cmp-whmcs-module-v1.0.2.zip",
     "changelog": [
-        "Fixed Create Config Group SQL error (wrong WHMCS table names)",
-        "Display Name now defaults to actual resource name instead of UUID (Images, Flavors)",
-        "Added Projects and Security Groups tabs in CloudPe CMP Manager",
-        "Product module configuration: converted fields to dropdowns (Flavor, Image, Region, Security Group, Storage Policy) with curated admin selections",
-        "Added per-product Project override and Default Disk Size dropdown",
-        "Security groups are now applied at VM creation",
-        "Hid ns1/ns2 nameserver fields on order configure page for CloudPe CMP products"
+        "Fixed auto-updater: PHP OPcache is now invalidated after writing files so updates take effect immediately instead of showing the old version",
+        "Installer now pre-checks write permission and reports per-file copy failures instead of silently succeeding",
+        "Updates UI shows detailed stats (files written / failed / opcache cleared) and first failure message on partial updates"
     ]
 }
