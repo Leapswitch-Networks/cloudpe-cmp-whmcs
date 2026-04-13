@@ -2,6 +2,16 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.3] - 2026-04-13
+
+### Fixed
+- Create Config Group was writing the UUID as the Display Name when the saved `image_names` / `flavor_names` map was empty or equal to the ID. The group creator now live-fetches names from the CMP API as a fallback and persists them for next time.
+- Nameserver prefix fields (`ns1prefix` / `ns2prefix`) were still showing on the cart configure page and the admin product-edit page. v1.0.1's hook only matched `ns1` / `ns2`, not the `*prefix` variants WHMCS actually renders for server-type products. The hook now hides both name variants on both the client cart and the admin `configproducts.php` page.
+
+### Changed
+- Projects tab now has a **Region** column on both the fetch table and the applied/saved table. Regions are picked from a dropdown populated by a live `/regions` query, and saved under `project_regions`.
+- Removed the separate **Security Groups** tab from the admin navigation to keep the admin module focused. The loader/AJAX handlers are retained internally so nothing linked to them breaks.
+
 ## [1.0.2] - 2026-04-13
 
 ### Fixed

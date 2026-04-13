@@ -14,60 +14,53 @@ if (!defined("WHMCS")) {
 use WHMCS\Database\Capsule;
 
 /**
- * Hook: Hide ns1/ns2 nameserver fields on the order configure page
- * for CloudPe CMP products. The cloud VM is provisioned through the
- * CMP API - nameservers are irrelevant - so we suppress the fields
- * client-side rather than through a core template edit.
+ * Build the inline CSS+JS blob used to hide nameserver prefix fields
+ * on configure pages for CloudPe CMP products. Returning a shared
+ * builder means the client-area and admin-area hooks stay in lock-step
+ * on exactly which field names / labels to hide.
  *
- * Runs on every page render; cheap and scoped to the cart/configure
- * view so it won't affect anything else.
+ * WHMCS ships several field-name variants depending on product type
+ * and area:
+ *   - client cart (cart.php?a=confproduct): ns1prefix, ns2prefix
+ *   - older templates / some modules:       ns1, ns2
+ *   - admin product edit (configproducts.php?action=edit): ns1, ns2
+ *     plus separate "Nameserver 1 Prefix" / "Nameserver 2 Prefix"
+ *     labels.
+ * We target all of them and walk up to the nearest field wrapper so
+ * both the input and its label row disappear.
  */
-add_hook('ClientAreaHeadOutput', 1, function($vars) {
-    // Only inject on the cart's configure step
-    $page = $vars['filename'] ?? '';
-    $step = $_REQUEST['a'] ?? '';
-    if ($page !== 'cart' || $step !== 'confproduct') {
-        return '';
-    }
-
-    // Determine which product is being configured. WHMCS stores the
-    // cart products in session; the "i" query param is the cart index.
-    $cartIndex = $_REQUEST['i'] ?? null;
-    if ($cartIndex === null || empty($_SESSION['cart']['products'][$cartIndex]['pid'])) {
-        return '';
-    }
-    $productId = (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
-
-    $product = Capsule::table('tblproducts')->where('id', $productId)->first();
-    if (!$product || $product->servertype !== 'cloudpe_cmp') {
-        return '';
-    }
-
-    // Scoped CSS + a tiny JS fallback. Some templates render ns fields
-    // as inputs inside `.form-group`, others as <tr> rows - cover both.
+function cloudpe_cmp_hide_ns_html(): string
+{
     return <<<'HTML'
 <style>
-  /* CloudPe CMP: hide nameserver fields on configure-product step */
-  input[name="ns1"], input[name="ns2"] { display: none !important; }
-  label[for="ns1"], label[for="ns2"] { display: none !important; }
-  input[name="ns1"] ~ *, input[name="ns2"] ~ * { }
+  /* CloudPe CMP: nuke nameserver fields in the configure UI */
+  input[name="ns1"], input[name="ns2"],
+  input[name="ns1prefix"], input[name="ns2prefix"] { display: none !important; }
+  label[for="ns1"], label[for="ns2"],
+  label[for="ns1prefix"], label[for="ns2prefix"] { display: none !important; }
 </style>
 <script>
   (function() {
     function hideNsFields() {
-      var selectors = ['input[name="ns1"]', 'input[name="ns2"]'];
-      selectors.forEach(function(sel) {
-        var nodes = document.querySelectorAll(sel);
-        nodes.forEach(function(n) {
-          // Walk up to the nearest field wrapper and hide it
+      var names = ['ns1', 'ns2', 'ns1prefix', 'ns2prefix'];
+      names.forEach(function(name) {
+        document.querySelectorAll('input[name="' + name + '"]').forEach(function(n) {
+          // Walk up to the closest field wrapper (Bootstrap .form-group,
+          // a <tr> row, the generic .row, or the parent node) and hide it.
           var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row') || n.parentNode;
           if (wrapper) wrapper.style.display = 'none';
         });
+        document.querySelectorAll('label[for="' + name + '"]').forEach(function(l) {
+          var wrapper = l.closest('.form-group') || l.closest('tr') || l.closest('.row') || l.parentNode;
+          if (wrapper) wrapper.style.display = 'none';
+        });
       });
-      // Also hide any explicit label nodes (extra safety for custom templates)
-      document.querySelectorAll('label[for="ns1"], label[for="ns2"]').forEach(function(l) {
-        var wrapper = l.closest('.form-group') || l.closest('tr') || l.closest('.row') || l.parentNode;
-        if (wrapper) wrapper.style.display = 'none';
+      // Some admin-area product-edit templates don't link label[for] to
+      // the prefix inputs, but do put the word "Nameserver" in adjacent
+      // <td>/<th> cells. Hide the containing row when we detect that.
+      document.querySelectorAll('tr').forEach(function(tr) {
+        if (!tr.querySelector('input[name="ns1prefix"], input[name="ns2prefix"]')) return;
+        tr.style.display = 'none';
       });
     }
     if (document.readyState === 'loading') {
@@ -78,6 +71,77 @@ add_hook('ClientAreaHeadOutput', 1, function($vars) {
   })();
 </script>
 HTML;
+}
+
+/**
+ * Decide whether the given product id is a CloudPe CMP product.
+ */
+function cloudpe_cmp_product_is_cmp(int $productId): bool
+{
+    if ($productId <= 0) return false;
+    $product = Capsule::table('tblproducts')->where('id', $productId)->first();
+    return $product && $product->servertype === 'cloudpe_cmp';
+}
+
+/**
+ * Hook: Hide ns1/ns2 (and ns1prefix/ns2prefix) fields on the client
+ * order configure page for CloudPe CMP products. Cloud VMs are
+ * provisioned through the CMP API, so nameserver inputs are noise.
+ */
+add_hook('ClientAreaHeadOutput', 1, function ($vars) {
+    $page = $vars['filename'] ?? '';
+    // Cover cart/configure (most common) plus a few related URLs the
+    // flag may travel through (e.g. upgrade flows).
+    $stepAction = $_REQUEST['a'] ?? '';
+    $cartAction = $_REQUEST['ca'] ?? '';
+    $isConfigureStep = ($page === 'cart')
+        && in_array($stepAction, ['confproduct', 'configureproduct', 'confdomains'], true);
+    if (!$isConfigureStep && $cartAction !== 'configureproduct') {
+        return '';
+    }
+
+    // Figure out which product is being configured. Prefer the cart
+    // index from the URL; fall back to iterating the session if
+    // missing (some cart flows don't pass "i").
+    $productId = 0;
+    $cartIndex = $_REQUEST['i'] ?? null;
+    if ($cartIndex !== null && isset($_SESSION['cart']['products'][$cartIndex]['pid'])) {
+        $productId = (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
+    } elseif (!empty($_SESSION['cart']['products']) && is_array($_SESSION['cart']['products'])) {
+        // If any product in the cart is a CMP product, inject anyway;
+        // cheaper than having a stale ns field sneak through.
+        foreach ($_SESSION['cart']['products'] as $p) {
+            if (!empty($p['pid']) && cloudpe_cmp_product_is_cmp((int)$p['pid'])) {
+                $productId = (int)$p['pid'];
+                break;
+            }
+        }
+    }
+
+    if (!cloudpe_cmp_product_is_cmp($productId)) {
+        return '';
+    }
+
+    return cloudpe_cmp_hide_ns_html();
+});
+
+/**
+ * Hook: Hide nameserver prefix fields on the admin product-edit page
+ * for CloudPe CMP products. WHMCS shows "Nameserver 1 Prefix" /
+ * "Nameserver 2 Prefix" on the Details tab of every server-type
+ * product; those are irrelevant for VM provisioning.
+ */
+add_hook('AdminAreaHeadOutput', 1, function ($vars) {
+    // Only inject on the product-edit UI; cheap to check.
+    $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
+    if ($scriptName !== 'configproducts.php') {
+        return '';
+    }
+    $productId = (int)($_REQUEST['id'] ?? 0);
+    if (!cloudpe_cmp_product_is_cmp($productId)) {
+        return '';
+    }
+    return cloudpe_cmp_hide_ns_html();
 });
 
 /**

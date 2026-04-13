@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.2');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.3');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -554,13 +554,48 @@ function cloudpe_cmp_admin_load_projects(int $serverId): array
 
     $projects = [];
     foreach ((array)($result['projects'] ?? []) as $proj) {
+      // Projects may carry region info under several shapes depending on
+      // how the API evolves; normalize into a comma-separated string.
+      $regionVal = '';
+      if (!empty($proj['region'])) {
+        $regionVal = is_array($proj['region']) ? implode(',', $proj['region']) : (string)$proj['region'];
+      } elseif (!empty($proj['regions'])) {
+        if (is_array($proj['regions'])) {
+          // Array of slugs or array of region objects
+          $slugs = array_map(function ($r) {
+            return is_array($r) ? ($r['slug'] ?? $r['id'] ?? $r['name'] ?? '') : (string)$r;
+          }, $proj['regions']);
+          $regionVal = implode(',', array_filter($slugs));
+        } else {
+          $regionVal = (string)$proj['regions'];
+        }
+      }
+
       $projects[] = [
-        'id'   => $proj['id'] ?? $proj['uuid'] ?? '',
-        'name' => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
+        'id'     => $proj['id'] ?? $proj['uuid'] ?? '',
+        'name'   => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
+        'region' => $regionVal,
       ];
     }
 
-    return ['success' => true, 'projects' => $projects];
+    // Also fetch available regions so the UI can render a dropdown for
+    // per-project region assignment.
+    $regions = [];
+    try {
+      $regResult = $api->listRegions('vm');
+      if (!empty($regResult['success']) && !empty($regResult['regions'])) {
+        foreach ($regResult['regions'] as $r) {
+          $slug = $r['slug'] ?? $r['id'] ?? '';
+          if (!$slug) continue;
+          $regions[] = [
+            'slug' => $slug,
+            'name' => $r['name'] ?? $slug,
+          ];
+        }
+      }
+    } catch (\Exception $e) { /* region list is optional */ }
+
+    return ['success' => true, 'projects' => $projects, 'regions' => $regions];
   } catch (\Exception $e) {
     return ['success' => false, 'error' => $e->getMessage()];
   }
@@ -624,6 +659,26 @@ function cloudpe_cmp_admin_load_security_groups(int $serverId): array
   }
 }
 
+/**
+ * Decide whether we need to hit the CMP API to fill in missing
+ * friendly names. Returns true if any selected ID has no saved
+ * Display Name or the saved name is just the ID itself.
+ *
+ * @param array $selectedIds  Array of resource IDs (UUIDs)
+ * @param array $nameMap      Map of id => display name
+ * @return bool
+ */
+function cloudpe_cmp_admin_needs_name_lookup(array $selectedIds, array $nameMap): bool
+{
+  foreach ($selectedIds as $id) {
+    $name = $nameMap[$id] ?? '';
+    if ($name === '' || $name === $id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Configurable options group creator
 // ---------------------------------------------------------------------------
@@ -660,6 +715,45 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
   if (empty($savedImages) && empty($savedFlavors) && empty($savedDisks)) {
     return ['success' => false, 'message' => 'No resources configured. Please configure images, flavors, and disk sizes first.'];
+  }
+
+  // Fallback: if any saved Display Name is empty or equal to the ID
+  // (e.g. admin never clicked Apply with a loaded list, or saved
+  // names pre-date the v1.0.1 name-auto-persist fix), fetch live names
+  // from the CMP API so the configurable options get friendly labels
+  // instead of raw UUIDs.
+  $needImageLookup  = cloudpe_cmp_admin_needs_name_lookup($savedImages, $imageNames);
+  $needFlavorLookup = cloudpe_cmp_admin_needs_name_lookup($savedFlavors, $flavorNames);
+  if ($needImageLookup || $needFlavorLookup) {
+    if ($needImageLookup) {
+      $live = cloudpe_cmp_admin_load_images($serverId);
+      if (!empty($live['success']) && !empty($live['images'])) {
+        foreach ($live['images'] as $img) {
+          $id = $img['id'] ?? '';
+          if (!$id) continue;
+          // Only override when we don't already have a real, non-ID name
+          if (empty($imageNames[$id]) || $imageNames[$id] === $id) {
+            $imageNames[$id] = $img['name'] ?? $id;
+          }
+        }
+      }
+    }
+    if ($needFlavorLookup) {
+      $live = cloudpe_cmp_admin_load_flavors($serverId);
+      if (!empty($live['success']) && !empty($live['flavors'])) {
+        foreach ($live['flavors'] as $flv) {
+          $id = $flv['id'] ?? '';
+          if (!$id) continue;
+          if (empty($flavorNames[$id]) || $flavorNames[$id] === $id) {
+            $flavorNames[$id] = $flv['name'] ?? $id;
+          }
+        }
+      }
+    }
+    // Persist the resolved names so next Create Config Group (and the
+    // product dropdowns) pick them up without another live lookup.
+    if ($needImageLookup)  cloudpe_cmp_admin_save_setting($serverId, 'image_names', $imageNames);
+    if ($needFlavorLookup) cloudpe_cmp_admin_save_setting($serverId, 'flavor_names', $flavorNames);
   }
 
   try {
@@ -896,6 +990,12 @@ function cloudpe_cmp_admin_output(array $vars): void
         echo json_encode(['success' => true, 'message' => 'Project display names saved.']);
         exit;
 
+      case 'save_project_regions':
+        $regions = $_POST['regions'] ?? [];
+        cloudpe_cmp_admin_save_setting($serverId, 'project_regions', $regions);
+        echo json_encode(['success' => true, 'message' => 'Project regions saved.']);
+        exit;
+
       case 'save_security_groups':
         $selectedSgs = $_POST['selected_security_groups'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'selected_security_groups', $selectedSgs);
@@ -1026,14 +1126,13 @@ function cloudpe_cmp_admin_output(array $vars): void
     <ul class="nav nav-tabs" role="tablist">
       <?php
       $tabs = [
-        'dashboard'       => 'Dashboard',
-        'images'          => 'Images',
-        'flavors'         => 'Flavors',
-        'disks'           => 'Disk Sizes',
-        'projects'        => 'Projects',
-        'security_groups' => 'Security Groups',
-        'create_group'    => 'Create Config Group',
-        'updates'         => 'Updates',
+        'dashboard'     => 'Dashboard',
+        'images'        => 'Images',
+        'flavors'       => 'Flavors',
+        'disks'         => 'Disk Sizes',
+        'projects'      => 'Projects',
+        'create_group'  => 'Create Config Group',
+        'updates'       => 'Updates',
       ];
       foreach ($tabs as $tabKey => $tabLabel):
         $href = $moduleUrl . '&tab=' . $tabKey . '&server_id=' . $serverId;
@@ -1059,9 +1158,6 @@ function cloudpe_cmp_admin_output(array $vars): void
           break;
         case 'projects':
           cloudpe_cmp_admin_render_projects($serverId, $moduleUrl);
-          break;
-        case 'security_groups':
-          cloudpe_cmp_admin_render_security_groups($serverId, $moduleUrl);
           break;
         case 'create_group':
           cloudpe_cmp_admin_render_create_group($serverId, $moduleUrl);
@@ -1620,8 +1716,9 @@ function cloudpe_cmp_admin_render_disks(int $serverId, string $moduleUrl): void
  */
 function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): void
 {
-  $savedProjects     = cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
-  $projectNames      = cloudpe_cmp_admin_get_setting($serverId, 'project_names', []);
+  $savedProjects  = cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
+  $projectNames   = cloudpe_cmp_admin_get_setting($serverId, 'project_names', []);
+  $projectRegions = cloudpe_cmp_admin_get_setting($serverId, 'project_regions', []);
   ?>
   <div class="cmp-section">
     <h4>Projects
@@ -1629,7 +1726,7 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
         <i class="fa fa-refresh"></i> Load from API
       </button>
     </h4>
-    <p class="text-muted">Projects scope VM resources. Select the projects you want to expose to customers and set a friendly Display Name for each.</p>
+    <p class="text-muted">Projects scope VM resources. Select the projects you want to expose to customers, set a friendly Display Name, and pick the Region each project is served from.</p>
     <div id="projects-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading projects...</div>
     <div id="projects-error" class="alert alert-danger cmp-alert"></div>
     <div id="projects-container">
@@ -1647,6 +1744,7 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
           <tr>
             <th>Project ID</th>
             <th>Display Name</th>
+            <th>Region</th>
             <th>Action</th>
           </tr>
         </thead>
@@ -1656,11 +1754,18 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
             <td><?php echo htmlspecialchars($projId); ?></td>
             <td><input type="text" class="form-control input-sm proj-name"
                  value="<?php echo htmlspecialchars($projectNames[$projId] ?? $projId); ?>"></td>
+            <td>
+              <input type="text" class="form-control input-sm proj-region"
+                     list="proj-region-list"
+                     placeholder="Load from API for suggestions"
+                     value="<?php echo htmlspecialchars($projectRegions[$projId] ?? ''); ?>">
+            </td>
             <td><button class="btn btn-xs btn-danger btn-remove-project">Remove</button></td>
           </tr>
           <?php endforeach; ?>
         </tbody>
       </table>
+      <datalist id="proj-region-list"></datalist>
       <button class="btn btn-success" id="btn-save-project-config">
         <i class="fa fa-save"></i> Save Project Configuration
       </button>
@@ -1672,8 +1777,24 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
   (function() {
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
-    // Session-cached id->name map for default Display Name fallback
-    var loadedProjectNames = {};
+    // Session caches for fallback values when rebuilding rows
+    var loadedProjectNames   = {};
+    var loadedProjectRegions = {};
+    // Regions available for the region dropdowns - populated on Load
+    var loadedRegions = [];
+
+    function regionOptionsHtml(selected) {
+      // Build <option>s for the per-row region <select>, defaulting to
+      // the supplied `selected` slug. "(none)" is allowed so admin can
+      // opt out.
+      var html = '<option value="">(none)</option>';
+      loadedRegions.forEach(function(r) {
+        var sel = (r.slug === selected) ? ' selected' : '';
+        html += '<option value="' + $('<span>').text(r.slug).html() + '"' + sel + '>'
+          + $('<span>').text(r.name + ' (' + r.slug + ')').html() + '</option>';
+      });
+      return html;
+    }
 
     $('#btn-load-projects').on('click', function() {
       $('#projects-loading').show();
@@ -1684,9 +1805,18 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
           $('#projects-error').text(resp.error || 'Failed to load projects.').show();
           return;
         }
-        loadedProjectNames = {};
+        loadedProjectNames   = {};
+        loadedProjectRegions = {};
         $.each(resp.projects, function(i, p) {
-          loadedProjectNames[p.id] = p.name;
+          loadedProjectNames[p.id]   = p.name;
+          loadedProjectRegions[p.id] = p.region || '';
+        });
+        loadedRegions = resp.regions || [];
+        // Backfill region datalist for the already-saved applied table
+        var dl = $('#proj-region-list').empty();
+        loadedRegions.forEach(function(r) {
+          dl.append('<option value="' + $('<span>').text(r.slug).html() + '">'
+            + $('<span>').text(r.name).html() + '</option>');
         });
         renderProjectsTable(resp.projects);
       }, 'json').fail(function() {
@@ -1696,8 +1826,9 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     });
 
     function renderProjectsTable(projects) {
-      var savedProjects = <?php echo json_encode((array)$savedProjects); ?>;
-      var projectNames  = <?php echo json_encode((object)($projectNames ?: new stdClass())); ?>;
+      var savedProjects   = <?php echo json_encode((array)$savedProjects); ?>;
+      var projectNames    = <?php echo json_encode((object)($projectNames ?: new stdClass())); ?>;
+      var projectRegions  = <?php echo json_encode((object)($projectRegions ?: new stdClass())); ?>;
 
       if (!projects || projects.length === 0) {
         $('#projects-container').html('<div class="alert alert-warning">No projects returned by the API. You can still manually enter a Project ID in the server Access Hash field.</div>');
@@ -1706,14 +1837,19 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
 
       var html = '<table class="table table-bordered cmp-resource-table"><thead><tr>' +
         '<th><input type="checkbox" id="check-all-projects"> All</th>' +
-        '<th>Project ID</th><th>Name</th>' +
+        '<th>Project ID</th><th>Name</th><th>Region</th>' +
         '</tr></thead><tbody>';
 
       $.each(projects, function(i, p) {
         var checked = (savedProjects.indexOf(p.id) !== -1) ? 'checked' : '';
-        html += '<tr><td><input type="checkbox" class="proj-check" value="' + $('<span>').text(p.id).html() + '" ' + checked + '></td>' +
+        // Preselect: admin-saved override > API-returned region value
+        var currentRegion = projectRegions[p.id] || p.region || '';
+        html += '<tr data-id="' + $('<span>').text(p.id).html() + '">' +
+          '<td><input type="checkbox" class="proj-check" value="' + $('<span>').text(p.id).html() + '" ' + checked + '></td>' +
           '<td>' + $('<span>').text(p.id).html() + '</td>' +
-          '<td>' + $('<span>').text(p.name).html() + '</td></tr>';
+          '<td>' + $('<span>').text(p.name).html() + '</td>' +
+          '<td><select class="form-control input-sm proj-region-fetch">' + regionOptionsHtml(currentRegion) + '</select></td>' +
+          '</tr>';
       });
 
       html += '</tbody></table>';
@@ -1727,24 +1863,41 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
 
       $('#btn-apply-project-selection').on('click', function() {
         var selected = [];
-        $('.proj-check:checked').each(function() { selected.push($(this).val()); });
+        // Collect region selection from the fetch table so it carries
+        // into the applied config table on Apply.
+        var regionsFromFetch = {};
+        $('#projects-container tbody tr').each(function() {
+          var row  = $(this);
+          var pid  = row.data('id');
+          var cb   = row.find('.proj-check');
+          var rsel = row.find('.proj-region-fetch').val();
+          if (cb.is(':checked')) {
+            selected.push(pid);
+            regionsFromFetch[pid] = rsel || '';
+          }
+        });
 
         $.post(moduleUrl, { action: 'save_projects', server_id: serverId, selected_projects: selected }, function(resp) {
           if (resp.success) {
             var tbody = $('#projects-config-table tbody');
             tbody.empty();
-            var namesToPersist = {};
+            var namesToPersist   = {};
+            var regionsToPersist = {};
             $.each(selected, function(i, projId) {
-              var name = projectNames[projId] || loadedProjectNames[projId] || projId;
-              namesToPersist[projId] = name;
+              var name   = projectNames[projId] || loadedProjectNames[projId] || projId;
+              var region = regionsFromFetch[projId] || projectRegions[projId] || loadedProjectRegions[projId] || '';
+              namesToPersist[projId]   = name;
+              regionsToPersist[projId] = region;
               tbody.append('<tr data-id="' + $('<span>').text(projId).html() + '">' +
                 '<td>' + $('<span>').text(projId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm proj-name" value="' + $('<span>').text(name).html() + '"></td>' +
+                '<td><input type="text" class="form-control input-sm proj-region" list="proj-region-list" value="' + $('<span>').text(region).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-project">Remove</button></td>' +
                 '</tr>');
             });
             $('#projects-saved-section').show();
-            $.post(moduleUrl, { action: 'save_project_names', server_id: serverId, names: namesToPersist }, null, 'json');
+            $.post(moduleUrl, { action: 'save_project_names',   server_id: serverId, names: namesToPersist },     null, 'json');
+            $.post(moduleUrl, { action: 'save_project_regions', server_id: serverId, regions: regionsToPersist }, null, 'json');
           }
         }, 'json');
       });
@@ -1755,16 +1908,18 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     });
 
     $('#btn-save-project-config').on('click', function() {
-      var names = {}, ids = [];
+      var names = {}, regions = {}, ids = [];
       $('#projects-config-table tbody tr').each(function() {
         var id = $(this).data('id');
         ids.push(id);
-        names[id] = $(this).find('.proj-name').val();
+        names[id]   = $(this).find('.proj-name').val();
+        regions[id] = $(this).find('.proj-region').val();
       });
 
       $.when(
-        $.post(moduleUrl, { action: 'save_project_names', server_id: serverId, names: names }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_projects',      server_id: serverId, selected_projects: ids }, null, 'json')
+        $.post(moduleUrl, { action: 'save_project_names',   server_id: serverId, names: names },     null, 'json'),
+        $.post(moduleUrl, { action: 'save_project_regions', server_id: serverId, regions: regions }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_projects',        server_id: serverId, selected_projects: ids }, null, 'json')
       ).done(function() {
         $('#projects-save-msg').text('Project configuration saved successfully.').addClass('alert alert-success').show();
         setTimeout(function() { $('#projects-save-msg').hide(); }, 3000);
