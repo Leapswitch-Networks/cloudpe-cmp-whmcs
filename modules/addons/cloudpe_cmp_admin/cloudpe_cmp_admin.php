@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.3');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.4');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -218,7 +218,24 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
       throw new \Exception('Could not locate modules/ directory in the archive.');
     }
 
-    $whmcsRoot = dirname(dirname(dirname(dirname(__DIR__))));
+    // WHMCS defines ROOTDIR globally - use it rather than a fragile
+    // dirname() chain (v1.0.2 got the dirname count wrong and wrote
+    // files one level above the real WHMCS root, silently because the
+    // parent directory was writable).
+    if (!defined('ROOTDIR')) {
+      throw new \Exception('ROOTDIR is not defined - run this from inside WHMCS.');
+    }
+    $whmcsRoot = ROOTDIR;
+
+    // Belt-and-suspenders: a real WHMCS root always has init.php
+    // (or configuration.php). Fail fast if that's not the case so a
+    // future misconfiguration can't silently write files somewhere
+    // unexpected.
+    if (!file_exists($whmcsRoot . '/init.php') && !file_exists($whmcsRoot . '/configuration.php')) {
+      throw new \Exception(
+        'Refusing to install: ROOTDIR (' . $whmcsRoot . ') does not look like a WHMCS root.'
+      );
+    }
 
     // Pre-check: ensure destinations are writable. Silent copy()
     // failures were the primary cause of "Update successful but old
@@ -229,6 +246,18 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
       if (is_dir($dir) && !is_writable($dir)) {
         throw new \Exception("Module directory is not writable by the web server: {$dir}. Fix ownership/permissions and retry.");
       }
+    }
+
+    // Snapshot the current module files before we overwrite them so
+    // admins can roll back if the update goes sideways. Matches the
+    // reference cloudpe-whmcs behaviour.
+    $backupDir = $whmcsRoot . '/modules/cloudpe_cmp_backup_' . date('YmdHis');
+    $backupStats = [];
+    if (is_dir($dstServer)) {
+      cloudpe_cmp_admin_copy_directory($dstServer, $backupDir . '/servers/cloudpe_cmp', $backupStats);
+    }
+    if (is_dir($dstAddon)) {
+      cloudpe_cmp_admin_copy_directory($dstAddon, $backupDir . '/addons/cloudpe_cmp_admin', $backupStats);
     }
 
     // Copy server module
@@ -242,6 +271,10 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
     if (is_dir($srcAddon)) {
       cloudpe_cmp_admin_copy_directory($srcAddon, $dstAddon, $stats);
     }
+
+    // Surface backup location in the stats so admins know where to
+    // restore from if needed.
+    $stats['backup_path'] = $backupDir;
 
     // Nuke PHP OPcache so the next request sees the freshly-written
     // files. Without this, the old bytecode keeps being served and

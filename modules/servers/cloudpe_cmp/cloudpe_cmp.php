@@ -5,7 +5,7 @@
  * Provisions virtual machines on CloudPe CMP (FastAPI backend)
  * using API Key authentication.
  *
- * @version 1.0.3
+ * @version 1.0.4
  */
 
 if (!defined("WHMCS")) {

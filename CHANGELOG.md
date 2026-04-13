@@ -2,6 +2,11 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.4] - 2026-04-13
+
+### Fixed
+- **CRITICAL: Auto-updater was writing files to the wrong directory.** The installer had one too many `dirname()` calls when resolving the WHMCS root, so files were being written one level _above_ the WHMCS root. `copy()` succeeded (parent directory was typically writable), the status message reported "N files written", and `opcache_invalidate()` silently returned false because no cache entry existed at the (wrong) path — which is why "0 opcache entries cleared" appeared despite the successful-looking count. The module files on disk were never actually updated. The installer now resolves the root correctly and hard-fails if the resolved path doesn't contain `init.php` / `configuration.php`.
+
 ## [1.0.3] - 2026-04-13
 
 ### Fixed

@@ -1,13 +1,10 @@
 {
-    "version": "1.0.3",
+    "version": "1.0.4",
     "released": "2026-04-13",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.3/cloudpe-cmp-whmcs-module-v1.0.3.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.4/cloudpe-cmp-whmcs-module-v1.0.4.zip",
     "changelog": [
-        "Create Config Group: live-fetch image/flavor names from CMP API when saved Display Name is the ID, so configurable options get friendly labels",
-        "Projects tab: added Region column to both the fetch table and the applied/saved table, auto-saved as project_regions",
-        "Removed the separate Security Groups tab from the admin navigation",
-        "Hid Nameserver 1/2 Prefix fields on the cart configure page and on the admin product-edit page for CloudPe CMP products (the previous fix only covered ns1/ns2, not ns1prefix/ns2prefix)"
+        "CRITICAL: Auto-updater was writing files one level above the WHMCS root due to an extra dirname() call. Files appeared written (non-zero count) but the real module directory was untouched, so the UI kept showing the old version. Installer now resolves the WHMCS root correctly and refuses to install if the target doesn't look like a real WHMCS root."
     ]
 }
