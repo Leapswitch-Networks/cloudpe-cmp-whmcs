@@ -5,7 +5,7 @@
  * Provisions virtual machines on CloudPe CMP (FastAPI backend)
  * using API Key authentication.
  *
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 if (!defined("WHMCS")) {
@@ -28,30 +28,31 @@ function cloudpe_cmp_MetaData(): array
 
 function cloudpe_cmp_ConfigOptions(): array
 {
+    // Product Module Settings -> Configuration
+    // We render these as WHMCS dropdowns so the admin can pick a default
+    // value for each order item directly. The Loader callbacks query the
+    // CMP API using the server credentials bound to the product.
     return [
         'flavor' => [
-            'FriendlyName' => 'Flavor',
-            'Type' => 'text',
-            'Size' => 64,
+            'FriendlyName' => 'Default Flavor',
+            'Type' => 'dropdown',
             'Loader' => 'cloudpe_cmp_FlavorLoader',
             'SimpleMode' => true,
-            'Description' => 'VM Size/Flavor',
+            'Description' => 'Default VM size (can be overridden by a "Server Size" Configurable Option).',
         ],
         'image' => [
             'FriendlyName' => 'Default Image',
-            'Type' => 'text',
-            'Size' => 64,
+            'Type' => 'dropdown',
             'Loader' => 'cloudpe_cmp_ImageLoader',
             'SimpleMode' => true,
-            'Description' => 'Default OS Image (can be overridden by Configurable Options)',
+            'Description' => 'Default OS image (can be overridden by an "Operating System" Configurable Option).',
         ],
         'region' => [
             'FriendlyName' => 'Region',
-            'Type' => 'text',
-            'Size' => 64,
+            'Type' => 'dropdown',
             'Loader' => 'cloudpe_cmp_RegionLoader',
             'SimpleMode' => true,
-            'Description' => 'Region for VM deployment',
+            'Description' => 'Region for VM deployment.',
         ],
         'billing_period' => [
             'FriendlyName' => 'Billing Period',
@@ -59,31 +60,43 @@ function cloudpe_cmp_ConfigOptions(): array
             'Options' => 'monthly|Monthly,hourly|Hourly',
             'Default' => 'monthly',
             'SimpleMode' => true,
-            'Description' => 'Default billing period',
+            'Description' => 'Default billing period.',
         ],
         'security_group' => [
-            'FriendlyName' => 'Security Group',
-            'Type' => 'text',
-            'Size' => 64,
+            'FriendlyName' => 'Default Security Group',
+            'Type' => 'dropdown',
             'Loader' => 'cloudpe_cmp_SecurityGroupLoader',
             'SimpleMode' => true,
-            'Description' => 'Security group for VM',
+            'Description' => 'Default firewall rules applied to the VM.',
         ],
         'min_volume_size' => [
-            'FriendlyName' => 'Minimum Volume Size',
+            'FriendlyName' => 'Minimum Volume Size (GB)',
             'Type' => 'text',
             'Size' => 10,
             'Default' => '30',
             'SimpleMode' => true,
-            'Description' => 'Minimum disk size in GB',
+            'Description' => 'Minimum disk size in GB. Orders below this will be bumped up.',
         ],
         'volume_type' => [
             'FriendlyName' => 'Storage Policy',
-            'Type' => 'text',
-            'Size' => 64,
+            'Type' => 'dropdown',
             'Loader' => 'cloudpe_cmp_VolumeTypeLoader',
             'SimpleMode' => true,
-            'Description' => 'Volume type (e.g., General Purpose)',
+            'Description' => 'Volume type (e.g. General Purpose).',
+        ],
+        'project' => [
+            'FriendlyName' => 'Project',
+            'Type' => 'dropdown',
+            'Loader' => 'cloudpe_cmp_ProjectLoader',
+            'SimpleMode' => true,
+            'Description' => 'Project the VM is created under. Leave blank to use the server default (Access Hash).',
+        ],
+        'default_disk_size' => [
+            'FriendlyName' => 'Default Disk Size',
+            'Type' => 'dropdown',
+            'Loader' => 'cloudpe_cmp_DiskSizeLoader',
+            'SimpleMode' => true,
+            'Description' => 'Default disk size when no "Disk Space" Configurable Option is selected.',
         ],
     ];
 }
@@ -92,8 +105,54 @@ function cloudpe_cmp_ConfigOptions(): array
 // Loader Functions
 // =========================================================================
 
+/**
+ * Read a setting the Admin Addon has saved for a given server.
+ *
+ * Used by loaders below so the product dropdowns prefer the curated
+ * selection (plus friendly display names) admins configured via the
+ * CloudPe CMP Manager, falling back to a full live API list when no
+ * curated selection exists yet.
+ *
+ * @param int $serverId WHMCS server ID (params['serverid'])
+ * @param string $key   setting_key in mod_cloudpe_cmp_settings
+ * @return mixed        decoded value or null
+ */
+function cloudpe_cmp_getAdminSetting(int $serverId, string $key)
+{
+    if ($serverId <= 0) {
+        return null;
+    }
+    try {
+        $row = Capsule::table('mod_cloudpe_cmp_settings')
+            ->where('server_id', $serverId)
+            ->where('setting_key', $key)
+            ->first();
+        if (!$row) {
+            return null;
+        }
+        $decoded = json_decode($row->setting_value, true);
+        return $decoded === null ? $row->setting_value : $decoded;
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
 function cloudpe_cmp_FlavorLoader(array $params): array
 {
+    $serverId = (int)($params['serverid'] ?? 0);
+    // Prefer the curated selection saved via the Admin Addon so the
+    // product dropdown stays aligned with what the admin chose to
+    // expose (and uses the friendly Display Names).
+    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_flavors');
+    $names    = cloudpe_cmp_getAdminSetting($serverId, 'flavor_names') ?: [];
+    if (is_array($selected) && !empty($selected)) {
+        $options = [];
+        foreach ($selected as $id) {
+            $options[$id] = $names[$id] ?? $id;
+        }
+        return $options;
+    }
+
     try {
         $api = new CloudPeCmpAPI($params);
         $region = trim($params['configoption3'] ?? '');
@@ -114,6 +173,17 @@ function cloudpe_cmp_FlavorLoader(array $params): array
 
 function cloudpe_cmp_ImageLoader(array $params): array
 {
+    $serverId = (int)($params['serverid'] ?? 0);
+    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_images');
+    $names    = cloudpe_cmp_getAdminSetting($serverId, 'image_names') ?: [];
+    if (is_array($selected) && !empty($selected)) {
+        $options = [];
+        foreach ($selected as $id) {
+            $options[$id] = $names[$id] ?? $id;
+        }
+        return $options;
+    }
+
     try {
         $api = new CloudPeCmpAPI($params);
         $region = trim($params['configoption3'] ?? '');
@@ -149,6 +219,17 @@ function cloudpe_cmp_RegionLoader(array $params): array
 
 function cloudpe_cmp_SecurityGroupLoader(array $params): array
 {
+    $serverId = (int)($params['serverid'] ?? 0);
+    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_security_groups');
+    $names    = cloudpe_cmp_getAdminSetting($serverId, 'security_group_names') ?: [];
+    if (is_array($selected) && !empty($selected)) {
+        $options = [];
+        foreach ($selected as $id) {
+            $options[$id] = $names[$id] ?? $id;
+        }
+        return $options;
+    }
+
     try {
         $api = new CloudPeCmpAPI($params);
         $projectId = trim($params['serveraccesshash'] ?? '');
@@ -186,6 +267,71 @@ function cloudpe_cmp_VolumeTypeLoader(array $params): array
     return ['error' => 'Failed to load volume types'];
 }
 
+/**
+ * Project dropdown loader. Prefers admin-curated selection from the
+ * CloudPe CMP Manager; otherwise falls back to a live /projects query.
+ */
+function cloudpe_cmp_ProjectLoader(array $params): array
+{
+    $serverId = (int)($params['serverid'] ?? 0);
+    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_projects');
+    $names    = cloudpe_cmp_getAdminSetting($serverId, 'project_names') ?: [];
+    if (is_array($selected) && !empty($selected)) {
+        $options = [];
+        foreach ($selected as $id) {
+            $options[$id] = $names[$id] ?? $id;
+        }
+        return $options;
+    }
+
+    try {
+        $api = new CloudPeCmpAPI($params);
+        $result = $api->listProjects();
+        if ($result['success']) {
+            $options = [];
+            foreach ($result['projects'] as $p) {
+                $id = $p['id'] ?? '';
+                if (!$id) continue;
+                $options[$id] = $p['name'] ?? $id;
+            }
+            if (!empty($options)) {
+                return $options;
+            }
+        }
+    } catch (Exception $e) {}
+    // Empty fallback - admin can leave blank and use server Access Hash
+    return ['' => '(use server default)'];
+}
+
+/**
+ * Disk size dropdown loader. Sources sizes from the admin module's
+ * saved Disk Sizes tab so the product config uses the same curated
+ * list. Falls back to sensible defaults.
+ */
+function cloudpe_cmp_DiskSizeLoader(array $params): array
+{
+    $serverId = (int)($params['serverid'] ?? 0);
+    $disks = cloudpe_cmp_getAdminSetting($serverId, 'disk_sizes');
+    $options = [];
+    if (is_array($disks) && !empty($disks)) {
+        foreach ($disks as $disk) {
+            $size  = (int)($disk['size_gb'] ?? $disk['size'] ?? 0);
+            if (!$size) continue;
+            $label = $disk['label'] ?? ($size . ' GB');
+            $options[(string)$size] = $label;
+        }
+    }
+    if (!empty($options)) {
+        return $options;
+    }
+    return [
+        '30'  => '30 GB',
+        '50'  => '50 GB',
+        '100' => '100 GB',
+        '200' => '200 GB',
+    ];
+}
+
 // =========================================================================
 // Connection Test
 // =========================================================================
@@ -218,16 +364,19 @@ function cloudpe_cmp_CreateAccount(array $params): string
         logModuleCall('cloudpe_cmp', 'CreateAccount', $params, '', 'Starting VM creation');
 
         // Get config options
-        $defaultFlavorId = trim($params['configoption1'] ?? '');
-        $defaultImageId = trim($params['configoption2'] ?? '');
-        $region = trim($params['configoption3'] ?? '');
-        $billingPeriod = $params['configoption4'] ?: 'monthly';
-        $securityGroupId = trim($params['configoption5'] ?? '');
-        $minVolumeSize = (int)($params['configoption6'] ?? 30);
-        $volumeType = trim($params['configoption7'] ?? '');
+        $defaultFlavorId  = trim($params['configoption1'] ?? '');
+        $defaultImageId   = trim($params['configoption2'] ?? '');
+        $region           = trim($params['configoption3'] ?? '');
+        $billingPeriod    = $params['configoption4'] ?: 'monthly';
+        $securityGroupId  = trim($params['configoption5'] ?? '');
+        $minVolumeSize    = (int)($params['configoption6'] ?? 30);
+        $volumeType       = trim($params['configoption7'] ?? '');
+        // New dropdowns (configoption8=project override, configoption9=default disk size)
+        $projectOverride  = trim($params['configoption8'] ?? '');
+        $defaultDiskSize  = (int)($params['configoption9'] ?? 0);
 
-        // Project ID from Access Hash
-        $projectId = trim($params['serveraccesshash'] ?? '');
+        // Project ID resolution: per-product override > server-level Access Hash
+        $projectId = $projectOverride !== '' ? $projectOverride : trim($params['serveraccesshash'] ?? '');
 
         // Get flavor from Configurable Options or default
         $flavorId = trim(
@@ -245,8 +394,13 @@ function cloudpe_cmp_CreateAccount(array $params): string
             $defaultImageId
         );
 
-        // Get volume size from Configurable Options or default
-        $volumeSize = (int)($params['configoptions']['Disk Space'] ?? $params['configoptions']['Volume Size'] ?? $minVolumeSize);
+        // Get volume size: Configurable Options -> product default_disk_size -> min_volume_size
+        $volumeSize = (int)(
+            $params['configoptions']['Disk Space']
+            ?? $params['configoptions']['Volume Size']
+            ?? $defaultDiskSize
+            ?? $minVolumeSize
+        );
         if ($volumeSize < $minVolumeSize) $volumeSize = $minVolumeSize;
         if ($volumeSize < 30) $volumeSize = 30;
 
@@ -279,6 +433,11 @@ function cloudpe_cmp_CreateAccount(array $params): string
 
         if (!empty($volumeType)) {
             $instanceData['volume_type'] = $volumeType;
+        }
+
+        if (!empty($securityGroupId)) {
+            // CMP accepts either a single ID or an array of IDs
+            $instanceData['security_group_ids'] = [$securityGroupId];
         }
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, '', 'Sending create request');

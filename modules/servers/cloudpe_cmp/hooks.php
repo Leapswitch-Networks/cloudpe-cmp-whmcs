@@ -14,6 +14,73 @@ if (!defined("WHMCS")) {
 use WHMCS\Database\Capsule;
 
 /**
+ * Hook: Hide ns1/ns2 nameserver fields on the order configure page
+ * for CloudPe CMP products. The cloud VM is provisioned through the
+ * CMP API - nameservers are irrelevant - so we suppress the fields
+ * client-side rather than through a core template edit.
+ *
+ * Runs on every page render; cheap and scoped to the cart/configure
+ * view so it won't affect anything else.
+ */
+add_hook('ClientAreaHeadOutput', 1, function($vars) {
+    // Only inject on the cart's configure step
+    $page = $vars['filename'] ?? '';
+    $step = $_REQUEST['a'] ?? '';
+    if ($page !== 'cart' || $step !== 'confproduct') {
+        return '';
+    }
+
+    // Determine which product is being configured. WHMCS stores the
+    // cart products in session; the "i" query param is the cart index.
+    $cartIndex = $_REQUEST['i'] ?? null;
+    if ($cartIndex === null || empty($_SESSION['cart']['products'][$cartIndex]['pid'])) {
+        return '';
+    }
+    $productId = (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
+
+    $product = Capsule::table('tblproducts')->where('id', $productId)->first();
+    if (!$product || $product->servertype !== 'cloudpe_cmp') {
+        return '';
+    }
+
+    // Scoped CSS + a tiny JS fallback. Some templates render ns fields
+    // as inputs inside `.form-group`, others as <tr> rows - cover both.
+    return <<<'HTML'
+<style>
+  /* CloudPe CMP: hide nameserver fields on configure-product step */
+  input[name="ns1"], input[name="ns2"] { display: none !important; }
+  label[for="ns1"], label[for="ns2"] { display: none !important; }
+  input[name="ns1"] ~ *, input[name="ns2"] ~ * { }
+</style>
+<script>
+  (function() {
+    function hideNsFields() {
+      var selectors = ['input[name="ns1"]', 'input[name="ns2"]'];
+      selectors.forEach(function(sel) {
+        var nodes = document.querySelectorAll(sel);
+        nodes.forEach(function(n) {
+          // Walk up to the nearest field wrapper and hide it
+          var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row') || n.parentNode;
+          if (wrapper) wrapper.style.display = 'none';
+        });
+      });
+      // Also hide any explicit label nodes (extra safety for custom templates)
+      document.querySelectorAll('label[for="ns1"], label[for="ns2"]').forEach(function(l) {
+        var wrapper = l.closest('.form-group') || l.closest('tr') || l.closest('.row') || l.parentNode;
+        if (wrapper) wrapper.style.display = 'none';
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', hideNsFields);
+    } else {
+      hideNsFields();
+    }
+  })();
+</script>
+HTML;
+});
+
+/**
  * Hook: Validate configurable options on upgrade
  * Prevents selecting smaller disk size than current
  */

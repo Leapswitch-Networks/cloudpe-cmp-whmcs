@@ -113,8 +113,9 @@ After construction, API endpoints are relative to `/api/v1`:
 
 1. Update all version numbers
 2. Create release ZIP: `zip -r cloudpe-cmp-whmcs-module-vX.X.X.zip modules/`
-3. Create GitHub release with the ZIP
-4. Update `version.json` download_url
+3. Create GitHub release with the ZIP (`gh release create ...`)
+4. Remove the local ZIP after it's attached: `rm cloudpe-cmp-whmcs-module-vX.X.X.zip`
+5. Update `version.json` download_url
 
 ## Testing
 

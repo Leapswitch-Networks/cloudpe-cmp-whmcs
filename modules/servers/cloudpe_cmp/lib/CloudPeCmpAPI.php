@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 class CloudPeCmpAPI
@@ -123,6 +123,10 @@ class CloudPeCmpAPI
 
             if (!empty($params['billing_period'])) {
                 $data['billing_period'] = $params['billing_period'];
+            }
+
+            if (!empty($params['security_group_ids'])) {
+                $data['security_group_ids'] = (array)$params['security_group_ids'];
             }
 
             $response = $this->apiRequest('/instances', 'POST', $data);
@@ -470,6 +474,35 @@ class CloudPeCmpAPI
     // =========================================================================
     // Resources
     // =========================================================================
+
+    /**
+     * List projects available to the authenticated user/org.
+     *
+     * The CMP API may expose this under /projects. We handle missing
+     * endpoints gracefully so callers can fall back to manual config.
+     */
+    public function listProjects(): array
+    {
+        try {
+            $response = $this->apiRequest('/projects', 'GET');
+
+            if (!$response['success']) {
+                // Endpoint not available - return empty set so admins can
+                // still manually enter project IDs without blocking.
+                if (($response['httpCode'] ?? 0) === 404) {
+                    return ['success' => true, 'projects' => []];
+                }
+                return $response;
+            }
+
+            $result = json_decode($response['body'], true);
+            // Accept either { items: [...] } or a bare array
+            $projects = $result['items'] ?? $result['projects'] ?? $result ?? [];
+            return ['success' => true, 'projects' => $projects];
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
 
     /**
      * List available regions
