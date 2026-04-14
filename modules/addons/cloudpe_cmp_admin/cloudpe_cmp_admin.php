@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.6');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.8');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -455,7 +455,7 @@ function cloudpe_cmp_admin_get_setting(int $serverId, string $key, $default = nu
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), images (array)|error (string)
  */
-function cloudpe_cmp_admin_load_images(int $serverId): array
+function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -477,7 +477,7 @@ function cloudpe_cmp_admin_load_images(int $serverId): array
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listImages();
+    $result = $api->listImages($region);
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load images.'];
@@ -486,19 +486,17 @@ function cloudpe_cmp_admin_load_images(int $serverId): array
     $images = [];
     foreach ((array)($result['images'] ?? []) as $img) {
       $id = $img['id'] ?? $img['slug'] ?? '';
-      // Normalise region to a single slug string
-      $rawRegion = $img['region'] ?? $img['regions'] ?? '';
-      if (is_array($rawRegion)) {
-        $rawRegion = implode(',', array_filter(array_map(fn($r) => is_array($r) ? ($r['slug'] ?? $r['id'] ?? '') : (string)$r, $rawRegion)));
-      }
+      // The CMP API does not embed a region slug on each image object;
+      // region is a query filter. We stamp the fetched region onto every
+      // returned item so the UI can display and save it.
       $images[] = [
         'id'     => $id,
         'name'   => $img['name'] ?? $img['display_name'] ?? $id,
-        'region' => (string)$rawRegion,
+        'region' => $region,
       ];
     }
 
-    return ['success' => true, 'images' => $images];
+    return ['success' => true, 'images' => $images, 'region' => $region];
   } catch (\Exception $e) {
     return ['success' => false, 'error' => $e->getMessage()];
   }
@@ -510,7 +508,7 @@ function cloudpe_cmp_admin_load_images(int $serverId): array
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), flavors (array)|error (string)
  */
-function cloudpe_cmp_admin_load_flavors(int $serverId): array
+function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -532,7 +530,7 @@ function cloudpe_cmp_admin_load_flavors(int $serverId): array
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listFlavors();
+    $result = $api->listFlavors($region);
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load flavors.'];
@@ -541,10 +539,8 @@ function cloudpe_cmp_admin_load_flavors(int $serverId): array
     $flavors = [];
     foreach ((array)($result['flavors'] ?? []) as $flv) {
       $id = $flv['id'] ?? $flv['slug'] ?? '';
-      $rawRegion = $flv['region'] ?? $flv['regions'] ?? '';
-      if (is_array($rawRegion)) {
-        $rawRegion = implode(',', array_filter(array_map(fn($r) => is_array($r) ? ($r['slug'] ?? $r['id'] ?? '') : (string)$r, $rawRegion)));
-      }
+      // Region is a query filter on the CMP API, not a per-item field;
+      // stamp the requested region onto every returned flavor.
       $flavors[] = [
         'id'        => $id,
         'name'      => $flv['name'] ?? $flv['display_name'] ?? $id,
@@ -552,11 +548,11 @@ function cloudpe_cmp_admin_load_flavors(int $serverId): array
         'memory_gb' => isset($flv['ram'])
           ? round($flv['ram'] / 1024, 1)
           : ($flv['memory_gb'] ?? $flv['memory'] ?? 0),
-        'region'    => (string)$rawRegion,
+        'region'    => $region,
       ];
     }
 
-    return ['success' => true, 'flavors' => $flavors];
+    return ['success' => true, 'flavors' => $flavors, 'region' => $region];
   } catch (\Exception $e) {
     return ['success' => false, 'error' => $e->getMessage()];
   }
@@ -1007,11 +1003,11 @@ function cloudpe_cmp_admin_output(array $vars): void
         exit;
 
       case 'load_images':
-        echo json_encode(cloudpe_cmp_admin_load_images($serverId));
+        echo json_encode(cloudpe_cmp_admin_load_images($serverId, trim($_POST['region'] ?? '')));
         exit;
 
       case 'load_flavors':
-        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId));
+        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId, trim($_POST['region'] ?? '')));
         exit;
 
       case 'load_projects':
@@ -1324,11 +1320,18 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
   $imageRegions = cloudpe_cmp_admin_get_setting($serverId, 'image_regions', []);
   ?>
   <div class="cmp-section">
-    <h4>Images
-      <button class="btn btn-sm btn-primary pull-right" id="btn-load-images">
+    <h4>Images</h4>
+    <div class="form-inline" style="margin-bottom:10px;">
+      <div class="form-group">
+        <label for="img-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
+        <select id="img-region-select" class="form-control" style="width:220px; margin-right:8px;">
+          <option value="">Loading regions...</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="btn-load-images">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-    </h4>
+    </div>
     <div id="images-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading images...</div>
     <div id="images-error" class="alert alert-danger cmp-alert"></div>
     <div id="images-container">
@@ -1357,12 +1360,12 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
             // Show ID only if no real name has been persisted yet
             $displayName = ($savedName !== '' && $savedName !== $imgId) ? $savedName : $imgId;
           ?>
-          <tr data-id="<?php echo htmlspecialchars($imgId); ?>">
+          <tr data-id="<?php echo htmlspecialchars($imgId); ?>"
+              data-region="<?php echo htmlspecialchars($imageRegions[$imgId] ?? ''); ?>">
             <td><?php echo htmlspecialchars($imgId); ?></td>
             <td><input type="text" class="form-control input-sm img-name"
                  value="<?php echo htmlspecialchars($displayName); ?>"></td>
-            <td><input type="text" class="form-control input-sm img-region"
-                 value="<?php echo htmlspecialchars($imageRegions[$imgId] ?? ''); ?>"></td>
+            <td><?php echo htmlspecialchars($imageRegions[$imgId] ?? '—'); ?></td>
             <td><input type="number" step="0.01" min="0" class="form-control input-sm img-price"
                  value="<?php echo htmlspecialchars($imagePrices[$imgId] ?? '0'); ?>"></td>
             <td><button class="btn btn-xs btn-danger btn-remove-image">Remove</button></td>
@@ -1386,10 +1389,26 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var loadedImageNames   = {};
     var loadedImageRegions = {};
 
+    // Populate the region selector on page load
+    $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, null, 'json')
+      .done(function(resp) {
+        // Reuse the regions list returned alongside projects
+        if (resp && resp.regions && resp.regions.length) {
+          var sel = $('#img-region-select').empty().append('<option value="">(all regions)</option>');
+          $.each(resp.regions, function(i, r) {
+            sel.append('<option value="' + $('<span>').text(r.slug).html() + '">'
+              + $('<span>').text(r.name + ' (' + r.slug + ')').html() + '</option>');
+          });
+        } else {
+          $('#img-region-select').empty().append('<option value="">(no regions found – enter manually)</option>');
+        }
+      });
+
     $('#btn-load-images').on('click', function() {
+      var region = $('#img-region-select').val();
       $('#images-loading').show();
       $('#images-error').hide();
-      $.post(moduleUrl, { action: 'load_images', server_id: serverId }, function(resp) {
+      $.post(moduleUrl, { action: 'load_images', server_id: serverId, region: region }, function(resp) {
         $('#images-loading').hide();
         if (!resp.success) {
           $('#images-error').text(resp.error || 'Failed to load images.').show();
@@ -1397,9 +1416,13 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         }
         loadedImageNames   = {};
         loadedImageRegions = {};
+        // The API returns region as a filter, not per-item; the loader
+        // stamps the query region on every returned object so we can
+        // pre-fill the Region column automatically.
+        var fetchedRegion = resp.region || region;
         $.each(resp.images, function(i, img) {
           loadedImageNames[img.id]   = img.name;
-          loadedImageRegions[img.id] = img.region || '';
+          loadedImageRegions[img.id] = img.region || fetchedRegion;
         });
         renderImagesTable(resp.images);
       }, 'json').fail(function() {
@@ -1467,10 +1490,10 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
               var price  = imagePrices[imgId] || '0';
               namesToPersist[imgId]   = name;
               regionsToPersist[imgId] = region;
-              tbody.append('<tr data-id="' + $('<span>').text(imgId).html() + '">' +
+              tbody.append('<tr data-id="' + $('<span>').text(imgId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
                 '<td>' + $('<span>').text(imgId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm img-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td><input type="text" class="form-control input-sm img-region" value="' + $('<span>').text(region).html() + '"></td>' +
+                '<td>' + $('<span>').text(region || '—').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-image">Remove</button></td>' +
                 '</tr>');
@@ -1493,7 +1516,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         var id = $(this).data('id');
         ids.push(id);
         names[id]   = $(this).find('.img-name').val();
-        regions[id] = $(this).find('.img-region').val();
+        regions[id] = $(this).data('region') || '';   // read from data attr, not an input
         prices[id]  = $(this).find('.img-price').val();
       });
 
@@ -1526,11 +1549,18 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
   $flavorRegions = cloudpe_cmp_admin_get_setting($serverId, 'flavor_regions', []);
   ?>
   <div class="cmp-section">
-    <h4>Flavors
-      <button class="btn btn-sm btn-primary pull-right" id="btn-load-flavors">
+    <h4>Flavors</h4>
+    <div class="form-inline" style="margin-bottom:10px;">
+      <div class="form-group">
+        <label for="flv-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
+        <select id="flv-region-select" class="form-control" style="width:220px; margin-right:8px;">
+          <option value="">Loading regions...</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="btn-load-flavors">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-    </h4>
+    </div>
     <div id="flavors-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading flavors...</div>
     <div id="flavors-error" class="alert alert-danger cmp-alert"></div>
     <div id="flavors-container">
@@ -1558,12 +1588,12 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
             $savedName = $flavorNames[$flvId] ?? '';
             $displayName = ($savedName !== '' && $savedName !== $flvId) ? $savedName : $flvId;
           ?>
-          <tr data-id="<?php echo htmlspecialchars($flvId); ?>">
+          <tr data-id="<?php echo htmlspecialchars($flvId); ?>"
+              data-region="<?php echo htmlspecialchars($flavorRegions[$flvId] ?? ''); ?>">
             <td><?php echo htmlspecialchars($flvId); ?></td>
             <td><input type="text" class="form-control input-sm flv-name"
                  value="<?php echo htmlspecialchars($displayName); ?>"></td>
-            <td><input type="text" class="form-control input-sm flv-region"
-                 value="<?php echo htmlspecialchars($flavorRegions[$flvId] ?? ''); ?>"></td>
+            <td><?php echo htmlspecialchars($flavorRegions[$flvId] ?? '—'); ?></td>
             <td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price"
                  value="<?php echo htmlspecialchars($flavorPrices[$flvId] ?? '0'); ?>"></td>
             <td><button class="btn btn-xs btn-danger btn-remove-flavor">Remove</button></td>
@@ -1586,10 +1616,25 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var loadedFlavorNames   = {};
     var loadedFlavorRegions = {};
 
+    // Populate the region selector on page load
+    $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, null, 'json')
+      .done(function(resp) {
+        if (resp && resp.regions && resp.regions.length) {
+          var sel = $('#flv-region-select').empty().append('<option value="">(all regions)</option>');
+          $.each(resp.regions, function(i, r) {
+            sel.append('<option value="' + $('<span>').text(r.slug).html() + '">'
+              + $('<span>').text(r.name + ' (' + r.slug + ')').html() + '</option>');
+          });
+        } else {
+          $('#flv-region-select').empty().append('<option value="">(no regions found – enter manually)</option>');
+        }
+      });
+
     $('#btn-load-flavors').on('click', function() {
+      var region = $('#flv-region-select').val();
       $('#flavors-loading').show();
       $('#flavors-error').hide();
-      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId }, function(resp) {
+      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId, region: region }, function(resp) {
         $('#flavors-loading').hide();
         if (!resp.success) {
           $('#flavors-error').text(resp.error || 'Failed to load flavors.').show();
@@ -1597,9 +1642,10 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         }
         loadedFlavorNames   = {};
         loadedFlavorRegions = {};
+        var fetchedRegion = resp.region || region;
         $.each(resp.flavors, function(i, flv) {
           loadedFlavorNames[flv.id]   = flv.name;
-          loadedFlavorRegions[flv.id] = flv.region || '';
+          loadedFlavorRegions[flv.id] = flv.region || fetchedRegion;
         });
         renderFlavorsTable(resp.flavors);
       }, 'json').fail(function() {
@@ -1667,10 +1713,10 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
               var price  = flavorPrices[flvId] || '0';
               namesToPersist[flvId]   = name;
               regionsToPersist[flvId] = region;
-              tbody.append('<tr data-id="' + $('<span>').text(flvId).html() + '">' +
+              tbody.append('<tr data-id="' + $('<span>').text(flvId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
                 '<td>' + $('<span>').text(flvId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm flv-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td><input type="text" class="form-control input-sm flv-region" value="' + $('<span>').text(region).html() + '"></td>' +
+                '<td>' + $('<span>').text(region || '—').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-flavor">Remove</button></td>' +
                 '</tr>');
@@ -1693,7 +1739,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         var id = $(this).data('id');
         ids.push(id);
         names[id]   = $(this).find('.flv-name').val();
-        regions[id] = $(this).find('.flv-region').val();
+        regions[id] = $(this).data('region') || '';   // read from data attr, not an input
         prices[id]  = $(this).find('.flv-price').val();
       });
 

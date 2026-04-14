@@ -2,6 +2,16 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.8] - 2026-04-14
+
+### Changed
+- **Region column in Selected Images / Selected Flavors** configuration tables is now read-only (plain text, like the ID column). Region is stamped from the fetch region and stored in a `data-region` attribute on each row so it is still persisted correctly on Save Configuration.
+
+## [1.0.7] - 2026-04-14
+
+### Fixed
+- **Images and Flavors: Region column was always empty after "Load from API".** The CMP API treats region as a *query filter*, not a per-item response field — no `region` property exists on individual image/flavor objects. Added a **Region selector dropdown** (auto-populated from `/regions` on page load) above each "Load from API" button. The chosen region is sent with the load request and stamped onto every returned row, so the Region column is filled automatically when you Apply the selection.
+
 ## [1.0.6] - 2026-04-14
 
 ### Fixed
