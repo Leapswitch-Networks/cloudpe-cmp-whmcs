@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.8');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.9');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -480,7 +480,11 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): arra
     $result = $api->listImages($region);
 
     if (!$result['success']) {
-      return ['success' => false, 'error' => $result['error'] ?? 'Failed to load images.'];
+      $msg = $result['error'] ?? 'Failed to load images.';
+      if (!empty($result['httpCode'])) {
+        $msg = 'HTTP ' . $result['httpCode'] . ': ' . $msg;
+      }
+      return ['success' => false, 'error' => $msg];
     }
 
     $images = [];
@@ -533,7 +537,11 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): arr
     $result = $api->listFlavors($region);
 
     if (!$result['success']) {
-      return ['success' => false, 'error' => $result['error'] ?? 'Failed to load flavors.'];
+      $msg = $result['error'] ?? 'Failed to load flavors.';
+      if (!empty($result['httpCode'])) {
+        $msg = 'HTTP ' . $result['httpCode'] . ': ' . $msg;
+      }
+      return ['success' => false, 'error' => $msg];
     }
 
     $flavors = [];
@@ -1321,7 +1329,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
   ?>
   <div class="cmp-section">
     <h4>Images</h4>
-    <div class="form-inline" style="margin-bottom:10px;">
+    <div class="form-inline" style="margin-bottom:6px;">
       <div class="form-group">
         <label for="img-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
         <select id="img-region-select" class="form-control" style="width:220px; margin-right:8px;">
@@ -1332,6 +1340,11 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         <i class="fa fa-refresh"></i> Load from API
       </button>
     </div>
+    <p class="text-muted" style="margin-bottom:10px; font-size:12px;">
+      <i class="fa fa-info-circle"></i>
+      Platform images are typically available in all regions. Select a region to tag loaded images
+      for deployment tracking — the list itself may not change per region.
+    </p>
     <div id="images-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading images...</div>
     <div id="images-error" class="alert alert-danger cmp-alert"></div>
     <div id="images-container">
@@ -1550,7 +1563,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
   ?>
   <div class="cmp-section">
     <h4>Flavors</h4>
-    <div class="form-inline" style="margin-bottom:10px;">
+    <div class="form-inline" style="margin-bottom:6px;">
       <div class="form-group">
         <label for="flv-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
         <select id="flv-region-select" class="form-control" style="width:220px; margin-right:8px;">
@@ -1561,6 +1574,11 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         <i class="fa fa-refresh"></i> Load from API
       </button>
     </div>
+    <p class="text-muted" style="margin-bottom:10px; font-size:12px;">
+      <i class="fa fa-info-circle"></i>
+      Select a region before loading — different regions have different available flavors
+      and pricing. Load separately per region to build a complete multi-region catalog.
+    </p>
     <div id="flavors-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading flavors...</div>
     <div id="flavors-error" class="alert alert-danger cmp-alert"></div>
     <div id="flavors-container">

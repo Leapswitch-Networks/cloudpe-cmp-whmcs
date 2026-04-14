@@ -548,11 +548,17 @@ class CloudPeCmpAPI
             $response = $this->apiRequest($url, 'GET');
 
             if (!$response['success']) {
-                return $response;
+                $detail = $response['error'] ?? '';
+                if (!empty($response['body'])) {
+                    $detail .= ' | Response: ' . substr($response['body'], 0, 300);
+                }
+                return ['success' => false, 'error' => $detail, 'httpCode' => $response['httpCode'] ?? 0];
             }
 
             $result = json_decode($response['body'], true);
-            return ['success' => true, 'flavors' => $result];
+            // Normalise: flat array or {items:[]} shape
+            $flavors = is_array($result) ? (isset($result[0]) || empty($result) ? $result : ($result['items'] ?? $result)) : [];
+            return ['success' => true, 'flavors' => $flavors];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }
@@ -566,7 +572,10 @@ class CloudPeCmpAPI
         try {
             $params = [];
             if (!empty($region)) {
+                // Accept both slug and UUID; pass as both params for
+                // maximum compatibility across API versions.
                 $params['region'] = $region;
+                $params['region_id'] = $region;
             }
             if (!empty($osDistro)) {
                 $params['os_distro'] = $osDistro;
@@ -578,11 +587,45 @@ class CloudPeCmpAPI
             $response = $this->apiRequest($url, 'GET');
 
             if (!$response['success']) {
-                return $response;
+                // Include HTTP code and raw body so callers can
+                // surface exactly what the API returned.
+                $detail = $response['error'] ?? '';
+                if (!empty($response['body'])) {
+                    $detail .= ' | Response: ' . substr($response['body'], 0, 300);
+                }
+                return [
+                    'success'  => false,
+                    'error'    => $detail,
+                    'httpCode' => $response['httpCode'] ?? 0,
+                ];
             }
 
             $result = json_decode($response['body'], true);
-            return ['success' => true, 'images' => $result];
+
+            // API returns a flat array of image objects or a grouped response.
+            // Normalise both shapes to a flat list under 'images'.
+            if (is_array($result)) {
+                // Flat array: [{id:..., name:...}, ...]
+                if (isset($result[0]) || empty($result)) {
+                    $images = $result;
+                // Grouped: {groups: [{images: [...]}]} or {images: [...]}
+                } elseif (isset($result['images'])) {
+                    $images = $result['images'];
+                } elseif (isset($result['groups'])) {
+                    $images = [];
+                    foreach ($result['groups'] as $group) {
+                        foreach ($group['images'] ?? [] as $img) {
+                            $images[] = $img;
+                        }
+                    }
+                } else {
+                    $images = $result;
+                }
+            } else {
+                $images = [];
+            }
+
+            return ['success' => true, 'images' => $images];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }

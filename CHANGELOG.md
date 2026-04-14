@@ -2,6 +2,16 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.9] - 2026-04-14
+
+### Fixed
+- **Images API** (`GET /images`): error response now includes the HTTP status code and first 300 chars of the response body so a 404 or 401 is visible directly in the admin UI instead of a generic message. Also normalises flat-array, `{items:[]}`, and grouped `{groups:[{images:[]}]}` response shapes.
+- **Flavors API** (`GET /flavors`): same HTTP-code + raw-body error surfacing and response shape normalisation.
+
+### Added
+- Info note on the **Images** tab: platform images are typically region-agnostic — the region selector tags images for deployment tracking; the list may not change per region.
+- Info note on the **Flavors** tab: different regions have different flavors — select a region before loading to get the correct flavor list for that region.
+
 ## [1.0.8] - 2026-04-14
 
 ### Changed
