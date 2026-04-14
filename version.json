@@ -1,12 +1,10 @@
 {
-    "version": "1.0.5",
+    "version": "1.0.6",
     "released": "2026-04-14",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.5/cloudpe-cmp-whmcs-module-v1.0.5.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.6/cloudpe-cmp-whmcs-module-v1.0.6.zip",
     "changelog": [
-        "Fixed Display Name saving as ID for Flavors and Images: saved name is only trusted when it differs from the ID",
-        "Images and Flavors tabs now show and persist a Region column in both the fetch table and the applied/saved table",
-        "Projects tab: Region is now a plain text input instead of a dropdown"
+        "Fixed: installer was blocking updates with 'Module directory is not writable' on shared hosts where is_writable() returns false even though copy() succeeds (suPHP, FastCGI, ACL setups). Removed the pre-check; per-file copy failures are still tracked and reported in the install stats."
     ]
 }

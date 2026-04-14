@@ -2,6 +2,11 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.6] - 2026-04-14
+
+### Fixed
+- Installer was blocking updates on shared hosts with "Module directory is not writable by the web server". `is_writable()` returns false on many shared-hosting setups (suPHP, PHP-FPM as the site user, ACLs) even though `copy()` would actually succeed. Removed the blanket pre-check. Per-file copy failures are still individually tracked and shown in the install stats, so real permission errors are still surfaced.
+
 ## [1.0.5] - 2026-04-14
 
 ### Fixed

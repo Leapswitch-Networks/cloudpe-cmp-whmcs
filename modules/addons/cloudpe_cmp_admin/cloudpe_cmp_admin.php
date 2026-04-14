@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.5');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.0.6');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -237,16 +237,14 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
       );
     }
 
-    // Pre-check: ensure destinations are writable. Silent copy()
-    // failures were the primary cause of "Update successful but old
-    // version still showing" in v1.0.1.
     $dstServer = $whmcsRoot . '/modules/servers/cloudpe_cmp';
     $dstAddon  = $whmcsRoot . '/modules/addons/cloudpe_cmp_admin';
-    foreach ([$dstServer, $dstAddon] as $dir) {
-      if (is_dir($dir) && !is_writable($dir)) {
-        throw new \Exception("Module directory is not writable by the web server: {$dir}. Fix ownership/permissions and retry.");
-      }
-    }
+    // Note: we intentionally skip an is_writable() pre-check here.
+    // On shared hosting PHP runs as the site user via suPHP/FastCGI, and
+    // is_writable() can return false for directories that copy() will
+    // actually succeed on (different effective UIDs, ACLs, etc.).
+    // Instead, per-file failures are tracked in $stats and surfaced after
+    // the attempt so the admin sees exactly which files failed and why.
 
     // Snapshot the current module files before we overwrite them so
     // admins can roll back if the update goes sideways. Matches the
