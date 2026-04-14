@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.0.9');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.0');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -1432,12 +1432,29 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         // The API returns region as a filter, not per-item; the loader
         // stamps the query region on every returned object so we can
         // pre-fill the Region column automatically.
-        var fetchedRegion = resp.region || region;
+        // When no region filter was used, stamp '(All)' so the column
+        // is never blank and the admin can see these images came from
+        // the unfiltered "all regions" call.
+        var fetchedRegion = resp.region || region || '(All)';
         $.each(resp.images, function(i, img) {
           loadedImageNames[img.id]   = img.name;
-          loadedImageRegions[img.id] = img.region || fetchedRegion;
+          loadedImageRegions[img.id] = fetchedRegion;
         });
-        renderImagesTable(resp.images);
+
+        // Show count + note if "All" was selected
+        if (!region) {
+          $('#images-error')
+            .removeClass('alert-danger')
+            .addClass('alert-info')
+            .html('<i class="fa fa-info-circle"></i> Loaded <strong>' + resp.images.length +
+              '</strong> images (all regions combined). This count may exceed the sum of ' +
+              'individual regions because some images are available across multiple regions.')
+            .show();
+        } else {
+          $('#images-error').hide().removeClass('alert-info').addClass('alert-danger');
+        }
+
+        renderImagesTable(resp.images, fetchedRegion);
       }, 'json').fail(function() {
         $('#images-loading').hide();
         $('#images-error').text('Request failed. Check server connectivity.').show();
@@ -1450,11 +1467,12 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       return (s && s !== id) ? s : (loadedImageNames[id] || id);
     }
 
-    function renderImagesTable(images) {
+    function renderImagesTable(images, regionLabel) {
       var savedImages  = <?php echo json_encode((array)$savedImages); ?>;
       var imageNames   = <?php echo json_encode((object)($imageNames  ?: new stdClass())); ?>;
       var imageRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
       var imagePrices  = <?php echo json_encode((object)($imagePrices  ?: new stdClass())); ?>;
+      regionLabel = regionLabel || '(All)';
 
       var html = '<table class="table table-bordered cmp-resource-table"><thead><tr>' +
         '<th><input type="checkbox" id="check-all-images"> All</th>' +
@@ -1463,11 +1481,13 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
 
       $.each(images, function(i, img) {
         var checked = (savedImages.indexOf(img.id) !== -1) ? 'checked' : '';
+        // Each row's region is the fetch-time region label (never blank)
+        var rowRegion = loadedImageRegions[img.id] || regionLabel;
         html += '<tr data-id="' + $('<span>').text(img.id).html() + '">' +
           '<td><input type="checkbox" class="img-check" value="' + $('<span>').text(img.id).html() + '" ' + checked + '></td>' +
           '<td>' + $('<span>').text(img.id).html() + '</td>' +
           '<td>' + $('<span>').text(img.name).html() + '</td>' +
-          '<td>' + $('<span>').text(img.region || '').html() + '</td>' +
+          '<td>' + $('<span>').text(rowRegion).html() + '</td>' +
           '</tr>';
       });
 
@@ -1506,7 +1526,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
               tbody.append('<tr data-id="' + $('<span>').text(imgId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
                 '<td>' + $('<span>').text(imgId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm img-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td>' + $('<span>').text(region || '—').html() + '</td>' +
+                '<td>' + $('<span>').text(region || '(All)').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-image">Remove</button></td>' +
                 '</tr>');
@@ -1660,12 +1680,25 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         }
         loadedFlavorNames   = {};
         loadedFlavorRegions = {};
-        var fetchedRegion = resp.region || region;
+        var fetchedRegion = resp.region || region || '(All)';
         $.each(resp.flavors, function(i, flv) {
           loadedFlavorNames[flv.id]   = flv.name;
-          loadedFlavorRegions[flv.id] = flv.region || fetchedRegion;
+          loadedFlavorRegions[flv.id] = fetchedRegion;
         });
-        renderFlavorsTable(resp.flavors);
+
+        if (!region) {
+          $('#flavors-error')
+            .removeClass('alert-danger')
+            .addClass('alert-info')
+            .html('<i class="fa fa-info-circle"></i> Loaded <strong>' + resp.flavors.length +
+              '</strong> flavors (all regions combined). Select a specific region to see the ' +
+              'exact flavors and pricing for that region.')
+            .show();
+        } else {
+          $('#flavors-error').hide().removeClass('alert-info').addClass('alert-danger');
+        }
+
+        renderFlavorsTable(resp.flavors, fetchedRegion);
       }, 'json').fail(function() {
         $('#flavors-loading').hide();
         $('#flavors-error').text('Request failed. Check server connectivity.').show();
@@ -1677,11 +1710,12 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       return (s && s !== id) ? s : (loadedFlavorNames[id] || id);
     }
 
-    function renderFlavorsTable(flavors) {
+    function renderFlavorsTable(flavors, regionLabel) {
       var savedFlavors  = <?php echo json_encode((array)$savedFlavors); ?>;
       var flavorNames   = <?php echo json_encode((object)($flavorNames  ?: new stdClass())); ?>;
       var flavorRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
       var flavorPrices  = <?php echo json_encode((object)($flavorPrices  ?: new stdClass())); ?>;
+      regionLabel = regionLabel || '(All)';
 
       var html = '<table class="table table-bordered cmp-resource-table"><thead><tr>' +
         '<th><input type="checkbox" id="check-all-flavors"> All</th>' +
@@ -1690,13 +1724,14 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
 
       $.each(flavors, function(i, flv) {
         var checked = (savedFlavors.indexOf(flv.id) !== -1) ? 'checked' : '';
+        var rowRegion = loadedFlavorRegions[flv.id] || regionLabel;
         html += '<tr data-id="' + $('<span>').text(flv.id).html() + '">' +
           '<td><input type="checkbox" class="flv-check" value="' + $('<span>').text(flv.id).html() + '" ' + checked + '></td>' +
           '<td>' + $('<span>').text(flv.id).html() + '</td>' +
           '<td>' + $('<span>').text(flv.name).html() + '</td>' +
           '<td>' + (parseInt(flv.vcpu) || 0) + '</td>' +
           '<td>' + (parseFloat(flv.memory_gb) || 0) + '</td>' +
-          '<td>' + $('<span>').text(flv.region || '').html() + '</td>' +
+          '<td>' + $('<span>').text(rowRegion).html() + '</td>' +
           '</tr>';
       });
 
@@ -1734,7 +1769,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
               tbody.append('<tr data-id="' + $('<span>').text(flvId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
                 '<td>' + $('<span>').text(flvId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm flv-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td>' + $('<span>').text(region || '—').html() + '</td>' +
+                '<td>' + $('<span>').text(region || '(All)').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-flavor">Remove</button></td>' +
                 '</tr>');

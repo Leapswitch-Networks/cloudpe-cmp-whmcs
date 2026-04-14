@@ -1,13 +1,12 @@
 {
-    "version": "1.0.9",
+    "version": "1.1.0",
     "released": "2026-04-14",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.9/cloudpe-cmp-whmcs-module-v1.0.9.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.0/cloudpe-cmp-whmcs-module-v1.1.0.zip",
     "changelog": [
-        "Images API: normalise flat-array and grouped response shapes; include HTTP code and raw body in error messages so 404/other errors are visible in the admin UI",
-        "Flavors API: same error-detail improvement; normalise items-wrapped response shape",
-        "Images tab: added info note that platform images are typically region-agnostic",
-        "Flavors tab: added info note to select region before loading for region-specific flavor lists"
+        "Region column now shows '(All)' instead of blank when All Regions is selected for images or flavors",
+        "Loading with All Regions shows an info banner explaining why the total count may exceed the sum of individual regions (images available across multiple regions are counted once per call)",
+        "Loading with a specific region hides the info banner and shows only that region's results"
     ]
 }

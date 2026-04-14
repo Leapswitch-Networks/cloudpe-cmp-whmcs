@@ -2,6 +2,12 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.0] - 2026-04-14
+
+### Fixed
+- **Region column blank on "All Regions" load.** Now shows `(All)` when no region filter was selected, so the column is never empty.
+- **Count mismatch explained.** Loading with "All Regions" now shows an info banner: _"Loaded N images (all regions combined). This count may exceed the sum of individual regions because some images are available across multiple regions."_ This explains why `all ≠ in-west3 + in-west2 + in-west2-zone-b`.
+
 ## [1.0.9] - 2026-04-14
 
 ### Fixed
