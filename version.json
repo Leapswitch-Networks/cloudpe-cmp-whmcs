@@ -1,10 +1,12 @@
 {
-    "version": "1.0.4",
-    "released": "2026-04-13",
+    "version": "1.0.5",
+    "released": "2026-04-14",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.4/cloudpe-cmp-whmcs-module-v1.0.4.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.0.5/cloudpe-cmp-whmcs-module-v1.0.5.zip",
     "changelog": [
-        "CRITICAL: Auto-updater was writing files one level above the WHMCS root due to an extra dirname() call. Files appeared written (non-zero count) but the real module directory was untouched, so the UI kept showing the old version. Installer now resolves the WHMCS root correctly and refuses to install if the target doesn't look like a real WHMCS root."
+        "Fixed Display Name saving as ID for Flavors and Images: saved name is only trusted when it differs from the ID",
+        "Images and Flavors tabs now show and persist a Region column in both the fetch table and the applied/saved table",
+        "Projects tab: Region is now a plain text input instead of a dropdown"
     ]
 }

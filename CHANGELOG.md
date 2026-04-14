@@ -2,6 +2,16 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.0.5] - 2026-04-14
+
+### Fixed
+- **Flavors/Images: Display Name was saving as ID.** The name resolution used `savedName || loadedName || id` which is truthy even when `savedName` _is_ the ID. Changed to only trust the saved name when it's a non-empty string that differs from the ID; otherwise prefers the API-loaded name.
+- **Projects: Region field was a `<select>` dropdown.** Replaced with a plain `<input type="text">` with a `<datalist>` for suggestions (populated when "Load from API" runs), matching the applied/saved table and the user's expectation.
+
+### Added
+- **Images tab**: Region column in both the fetch table (read-only from API) and the applied/saved table (editable text). Saved under `image_regions` and included in "Save Image Configuration".
+- **Flavors tab**: Region column in both the fetch table (read-only from API) and the applied/saved table (editable text). Saved under `flavor_regions` and included in "Save Flavor Configuration".
+
 ## [1.0.4] - 2026-04-13
 
 ### Fixed
