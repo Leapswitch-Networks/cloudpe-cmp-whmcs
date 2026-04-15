@@ -45,6 +45,12 @@ function cloudpe_cmp_hide_ns_html(): string
       var names = ['ns1', 'ns2', 'ns1prefix', 'ns2prefix'];
       names.forEach(function(name) {
         document.querySelectorAll('input[name="' + name + '"]').forEach(function(n) {
+          // Pre-fill with a dummy value so WHMCS server-side validation
+          // doesn't reject the form with "You must enter a prefix for
+          // both nameservers".
+          if (!n.value) {
+            n.value = (name === 'ns1' || name === 'ns1prefix') ? 'ns1' : 'ns2';
+          }
           // Walk up to the closest field wrapper (Bootstrap .form-group,
           // a <tr> row, the generic .row, or the parent node) and hide it.
           var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row') || n.parentNode;
@@ -63,10 +69,28 @@ function cloudpe_cmp_hide_ns_html(): string
         tr.style.display = 'none';
       });
     }
+
+    // Also ensure fields are pre-filled just before any form submits,
+    // in case the DOM changed after initial hide (e.g. Vue/React re-renders).
+    function preFillOnSubmit() {
+      document.querySelectorAll('form').forEach(function(form) {
+        form.addEventListener('submit', function() {
+          var ns1p = form.querySelector('input[name="ns1prefix"]');
+          var ns2p = form.querySelector('input[name="ns2prefix"]');
+          if (ns1p && !ns1p.value) ns1p.value = 'ns1';
+          if (ns2p && !ns2p.value) ns2p.value = 'ns2';
+        }, true);
+      });
+    }
+
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', hideNsFields);
+      document.addEventListener('DOMContentLoaded', function() {
+        hideNsFields();
+        preFillOnSubmit();
+      });
     } else {
       hideNsFields();
+      preFillOnSubmit();
     }
   })();
 </script>
@@ -308,7 +332,7 @@ function cloudpe_cmp_get_current_disk_size($serviceId, $productId)
         // Fallback: list volumes for the instance
         $projectId = trim($server->accesshash ?? '');
         if (!empty($projectId)) {
-            $volumesResult = $api->listVolumes($projectId, '', $serverId);
+            $volumesResult = $api->listVolumes($projectId, $serverId);
             if ($volumesResult['success'] && !empty($volumesResult['volumes'])) {
                 return (int)($volumesResult['volumes'][0]['size_gb'] ?? $volumesResult['volumes'][0]['size'] ?? 0);
             }

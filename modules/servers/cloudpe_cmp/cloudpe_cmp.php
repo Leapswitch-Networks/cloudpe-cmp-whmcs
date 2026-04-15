@@ -47,13 +47,6 @@ function cloudpe_cmp_ConfigOptions(): array
             'SimpleMode' => true,
             'Description' => 'Default OS image (can be overridden by an "Operating System" Configurable Option).',
         ],
-        'region' => [
-            'FriendlyName' => 'Region',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_RegionLoader',
-            'SimpleMode' => true,
-            'Description' => 'Region for VM deployment.',
-        ],
         'billing_period' => [
             'FriendlyName' => 'Billing Period',
             'Type' => 'dropdown',
@@ -97,6 +90,21 @@ function cloudpe_cmp_ConfigOptions(): array
             'Loader' => 'cloudpe_cmp_DiskSizeLoader',
             'SimpleMode' => true,
             'Description' => 'Default disk size when no "Disk Space" Configurable Option is selected.',
+        ],
+        'network' => [
+            'FriendlyName' => 'Network',
+            'Type' => 'dropdown',
+            'Loader' => 'cloudpe_cmp_NetworkLoader',
+            'SimpleMode' => true,
+            'Description' => 'Default network for the VM. Leave blank to use the project default.',
+        ],
+        'ip_version' => [
+            'FriendlyName' => 'IP Assignment',
+            'Type' => 'dropdown',
+            'Options' => 'ipv4|IPv4 Only,ipv6|IPv6 Only,both|Both IPv4 and IPv6',
+            'Default' => 'ipv4',
+            'SimpleMode' => true,
+            'Description' => 'IP version(s) to assign to the VM.',
         ],
     ];
 }
@@ -155,8 +163,7 @@ function cloudpe_cmp_FlavorLoader(array $params): array
 
     try {
         $api = new CloudPeCmpAPI($params);
-        $region = trim($params['configoption3'] ?? '');
-        $result = $api->listFlavors($region);
+        $result = $api->listFlavors();
         if ($result['success']) {
             $options = [];
             foreach ($result['flavors'] as $flavor) {
@@ -186,8 +193,7 @@ function cloudpe_cmp_ImageLoader(array $params): array
 
     try {
         $api = new CloudPeCmpAPI($params);
-        $region = trim($params['configoption3'] ?? '');
-        $result = $api->listImages($region);
+        $result = $api->listImages();
         if ($result['success']) {
             $options = [];
             foreach ($result['images'] as $image) {
@@ -197,24 +203,6 @@ function cloudpe_cmp_ImageLoader(array $params): array
         }
     } catch (Exception $e) {}
     return ['error' => 'Failed to load images'];
-}
-
-function cloudpe_cmp_RegionLoader(array $params): array
-{
-    try {
-        $api = new CloudPeCmpAPI($params);
-        $result = $api->listRegions('vm');
-        if ($result['success']) {
-            $options = [];
-            foreach ($result['regions'] as $region) {
-                $slug = $region['slug'] ?? $region['id'] ?? '';
-                $name = $region['name'] ?? $slug;
-                $options[$slug] = $name;
-            }
-            return $options;
-        }
-    } catch (Exception $e) {}
-    return ['error' => 'Failed to load regions'];
 }
 
 function cloudpe_cmp_SecurityGroupLoader(array $params): array
@@ -233,11 +221,10 @@ function cloudpe_cmp_SecurityGroupLoader(array $params): array
     try {
         $api = new CloudPeCmpAPI($params);
         $projectId = trim($params['serveraccesshash'] ?? '');
-        $region = trim($params['configoption3'] ?? '');
         if (empty($projectId)) {
             return ['error' => 'Project ID not configured (set Access Hash)'];
         }
-        $result = $api->listSecurityGroups($projectId, $region);
+        $result = $api->listSecurityGroups($projectId);
         if ($result['success']) {
             $options = [];
             foreach ($result['security_groups'] as $sg) {
@@ -251,15 +238,27 @@ function cloudpe_cmp_SecurityGroupLoader(array $params): array
 
 function cloudpe_cmp_VolumeTypeLoader(array $params): array
 {
+    $serverId = (int)($params['serverid'] ?? 0);
+    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_volume_types');
+    $names    = cloudpe_cmp_getAdminSetting($serverId, 'volume_type_names') ?: [];
+    if (is_array($selected) && !empty($selected)) {
+        $options = [];
+        foreach ($selected as $id) {
+            $options[$id] = $names[$id] ?? $id;
+        }
+        return $options;
+    }
+
     try {
         $api = new CloudPeCmpAPI($params);
-        $region = trim($params['configoption3'] ?? '');
-        $result = $api->listVolumeTypes($region);
+        $result = $api->listVolumeTypes();
         if ($result['success']) {
             $options = [];
             foreach ($result['volume_types'] as $vt) {
-                $name = $vt['name'] ?? $vt['id'] ?? '';
-                $options[$name] = $name;
+                $id   = $vt['id'] ?? $vt['name'] ?? '';
+                $name = $vt['name'] ?? $id;
+                if (!$id) continue;
+                $options[$id] = $name;
             }
             return $options;
         }
@@ -301,6 +300,24 @@ function cloudpe_cmp_ProjectLoader(array $params): array
     } catch (Exception $e) {}
     // Empty fallback - admin can leave blank and use server Access Hash
     return ['' => '(use server default)'];
+}
+
+function cloudpe_cmp_NetworkLoader(array $params): array
+{
+    try {
+        $api = new CloudPeCmpAPI($params);
+        $result = $api->listNetworks();
+        if ($result['success']) {
+            $options = ['' => '(project default)'];
+            foreach ($result['networks'] as $net) {
+                $id = $net['id'] ?? '';
+                if (!$id) continue;
+                $options[$id] = $net['name'] ?? $net['display_name'] ?? $id;
+            }
+            return $options;
+        }
+    } catch (Exception $e) {}
+    return ['' => '(project default)'];
 }
 
 /**
@@ -366,14 +383,14 @@ function cloudpe_cmp_CreateAccount(array $params): string
         // Get config options
         $defaultFlavorId  = trim($params['configoption1'] ?? '');
         $defaultImageId   = trim($params['configoption2'] ?? '');
-        $region           = trim($params['configoption3'] ?? '');
-        $billingPeriod    = $params['configoption4'] ?: 'monthly';
-        $securityGroupId  = trim($params['configoption5'] ?? '');
-        $minVolumeSize    = (int)($params['configoption6'] ?? 30);
-        $volumeType       = trim($params['configoption7'] ?? '');
-        // New dropdowns (configoption8=project override, configoption9=default disk size)
-        $projectOverride  = trim($params['configoption8'] ?? '');
-        $defaultDiskSize  = (int)($params['configoption9'] ?? 0);
+        $billingPeriod    = $params['configoption3'] ?: 'monthly';
+        $securityGroupId  = trim($params['configoption4'] ?? '');
+        $minVolumeSize    = (int)($params['configoption5'] ?? 30);
+        $volumeType       = trim($params['configoption6'] ?? '');
+        $projectOverride  = trim($params['configoption7'] ?? '');
+        $defaultDiskSize  = (int)($params['configoption8'] ?? 0);
+        $networkId        = trim($params['configoption9'] ?? '');
+        $ipVersion        = $params['configoption10'] ?: 'ipv4';
 
         // Project ID resolution: per-product override > server-level Access Hash
         $projectId = $projectOverride !== '' ? $projectOverride : trim($params['serveraccesshash'] ?? '');
@@ -411,9 +428,6 @@ function cloudpe_cmp_CreateAccount(array $params): string
         if (empty($imageId)) {
             return 'Configuration Error: No OS image specified.';
         }
-        if (empty($region)) {
-            return 'Configuration Error: No region specified.';
-        }
         if (empty($projectId)) {
             return 'Configuration Error: No project ID specified (set Access Hash on server).';
         }
@@ -425,7 +439,6 @@ function cloudpe_cmp_CreateAccount(array $params): string
             'name' => $hostname,
             'flavor' => $flavorId,
             'image' => $imageId,
-            'region' => $region,
             'project_id' => $projectId,
             'boot_volume_size_gb' => $volumeSize,
             'billing_period' => $billingPeriod,
@@ -438,6 +451,14 @@ function cloudpe_cmp_CreateAccount(array $params): string
         if (!empty($securityGroupId)) {
             // CMP accepts either a single ID or an array of IDs
             $instanceData['security_group_ids'] = [$securityGroupId];
+        }
+
+        if (!empty($networkId)) {
+            $instanceData['network_id'] = $networkId;
+        }
+
+        if (!empty($ipVersion) && $ipVersion !== 'ipv4') {
+            $instanceData['ip_version'] = $ipVersion;
         }
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, '', 'Sending create request');
@@ -629,7 +650,7 @@ function cloudpe_cmp_ChangePackage(array $params): string
             $defaultFlavorId
         );
 
-        $minVolumeSize = (int)($params['configoption6'] ?? 30);
+        $minVolumeSize = (int)($params['configoption5'] ?? 30);
         $newVolumeSize = (int)($params['configoptions']['Disk Space'] ?? $params['configoptions']['Volume Size'] ?? 0);
         $projectId = trim($params['serveraccesshash'] ?? '');
 
@@ -662,7 +683,7 @@ function cloudpe_cmp_ChangePackage(array $params): string
 
         // Handle volume resize (only increase supported)
         if ($newVolumeSize > 0 && $newVolumeSize >= $minVolumeSize && !empty($projectId)) {
-            $volumesResult = $api->listVolumes($projectId, '', $instanceId);
+            $volumesResult = $api->listVolumes($projectId, $instanceId);
 
             if ($volumesResult['success'] && !empty($volumesResult['volumes'])) {
                 $volume = $volumesResult['volumes'][0] ?? null;

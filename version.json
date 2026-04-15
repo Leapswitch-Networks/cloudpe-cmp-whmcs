@@ -1,15 +1,22 @@
 {
-    "version": "1.1.1-beta.1",
+    "version": "1.1.1-beta.2",
     "released": "2026-04-15",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.1/cloudpe-cmp-whmcs-module-v1.1.1-beta.1.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.2/cloudpe-cmp-whmcs-module-v1.1.1-beta.2.zip",
     "changelog": [
-        "Removed Region column from Images and Flavors tabs",
-        "Updates tab matches reference: auto-check/load, accordion panels, Upgrade/Downgrade buttons, compareVersions, formatReleaseNotes, PHP/WHMCS version shown",
-        "Fixed: check_update always showed 'Failed' due to missing success key in response",
-        "Fixed: release tags showed 'V' - get_all_releases now formats raw GitHub API data into version/download_url fields",
-        "Fixed: No Download Available - browser_download_url now correctly mapped from assets",
-        "Fixed: release description overflowed left side"
+        "Admin UI: unified single table for Images, Flavors, Projects, Security Groups, Storage Policies — saved items shown checked, Load from API appends unchecked new items, uncheck with confirmation removes",
+        "Admin: Region selector dropdown on Images and Flavors tabs for region-filtered API loading",
+        "Admin: Security Groups tab now accessible (was coded but not wired to nav)",
+        "Admin: New Storage Policies (Volume Types) tab with load/save support",
+        "Admin: Create Config Group now shows all existing config groups with edit links; Storage Policy included as 4th option in new groups",
+        "Admin: Dashboard shows Security Group and Storage Policy counts",
+        "Module Settings: Storage Policy (Volume Type) loader now reads from admin-saved selection, fixing blank dropdown",
+        "Module Settings: Added IP Assignment config option (IPv4/IPv6/Both)",
+        "Module Settings: Added Network config option with loader",
+        "Fix: listVolumes called with stale empty-string region arg in hooks.php",
+        "Fix: Nameserver prefix validation error on order — JS now pre-fills ns1prefix/ns2prefix so WHMCS validation passes",
+        "Fix: Release description overflow — removed white-space:pre-wrap, li items wrapped in ul",
+        "API: listRegions(), listNetworks() added; region_id param added to listFlavors/listImages"
     ]
 }

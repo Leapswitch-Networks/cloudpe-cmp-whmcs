@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.0.4
+ * @version 1.1.1
  */
 
 class CloudPeCmpAPI
@@ -91,7 +91,6 @@ class CloudPeCmpAPI
      *   - flavor: Flavor ID or name
      *   - image: Image ID or name
      *   - name: Instance name
-     *   - region: Region slug or UUID
      *   - project_id: Project UUID
      *   - ssh_key_ids: Array of SSH key IDs (optional)
      *   - boot_volume_size_gb: Boot volume size in GB (optional)
@@ -105,7 +104,6 @@ class CloudPeCmpAPI
                 'flavor' => $params['flavor'],
                 'image' => $params['image'],
                 'name' => $params['name'],
-                'region' => $params['region'],
                 'project_id' => $params['project_id'],
             ];
 
@@ -476,6 +474,64 @@ class CloudPeCmpAPI
     // =========================================================================
 
     /**
+     * List available regions.
+     *
+     * Returns regions filtered by service type (e.g. 'vm').
+     * Returns an empty list gracefully if the endpoint is not available.
+     *
+     * @param string $service Optional service type filter (e.g. 'vm')
+     */
+    public function listRegions(string $service = ''): array
+    {
+        try {
+            $params = [];
+            if (!empty($service)) {
+                $params['service'] = $service;
+            }
+            $query = http_build_query($params);
+            $response = $this->apiRequest('/regions' . ($query ? '?' . $query : ''), 'GET');
+
+            if (!$response['success']) {
+                if (($response['httpCode'] ?? 0) === 404) {
+                    return ['success' => true, 'regions' => []];
+                }
+                return $response;
+            }
+
+            $result = json_decode($response['body'], true);
+            $regions = $result['items'] ?? $result['regions'] ?? (is_array($result) ? $result : []);
+            return ['success' => true, 'regions' => $regions];
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * List networks available to the org/project.
+     *
+     * Returns gracefully if the endpoint is unavailable.
+     */
+    public function listNetworks(): array
+    {
+        try {
+            $response = $this->apiRequest('/networks', 'GET');
+
+            if (!$response['success']) {
+                if (($response['httpCode'] ?? 0) === 404) {
+                    return ['success' => true, 'networks' => []];
+                }
+                return $response;
+            }
+
+            $result = json_decode($response['body'], true);
+            $networks = $result['items'] ?? $result['networks'] ?? (is_array($result) ? $result : []);
+            return ['success' => true, 'networks' => $networks];
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
      * List projects available to the authenticated user/org.
      *
      * The CMP API may expose this under /projects. We handle missing
@@ -505,41 +561,20 @@ class CloudPeCmpAPI
     }
 
     /**
-     * List available regions
-     */
-    public function listRegions(string $service = ''): array
-    {
-        try {
-            $url = '/regions';
-            if (!empty($service)) {
-                $url .= '?service=' . urlencode($service);
-            }
-
-            $response = $this->apiRequest($url, 'GET');
-
-            if (!$response['success']) {
-                return $response;
-            }
-
-            $result = json_decode($response['body'], true);
-            return ['success' => true, 'regions' => $result];
-        } catch (Exception $e) {
-            return ['success' => false, 'error' => $e->getMessage()];
-        }
-    }
-
-    /**
      * List available flavors
+     *
+     * @param bool   $includeGpu  Include GPU flavors
+     * @param string $regionId    Optional region ID to filter by
      */
-    public function listFlavors(string $region = '', bool $includeGpu = false): array
+    public function listFlavors(bool $includeGpu = false, string $regionId = ''): array
     {
         try {
             $params = [];
-            if (!empty($region)) {
-                $params['region'] = $region;
-            }
             if ($includeGpu) {
                 $params['include_gpu'] = 'true';
+            }
+            if (!empty($regionId)) {
+                $params['region_id'] = $regionId;
             }
 
             $query = http_build_query($params);
@@ -566,19 +601,19 @@ class CloudPeCmpAPI
 
     /**
      * List available images
+     *
+     * @param string $osDistro  Optional OS distro filter
+     * @param string $regionId  Optional region ID to filter by
      */
-    public function listImages(string $region = '', string $osDistro = ''): array
+    public function listImages(string $osDistro = '', string $regionId = ''): array
     {
         try {
             $params = [];
-            if (!empty($region)) {
-                // Accept both slug and UUID; pass as both params for
-                // maximum compatibility across API versions.
-                $params['region'] = $region;
-                $params['region_id'] = $region;
-            }
             if (!empty($osDistro)) {
                 $params['os_distro'] = $osDistro;
+            }
+            if (!empty($regionId)) {
+                $params['region_id'] = $regionId;
             }
 
             $query = http_build_query($params);
@@ -634,13 +669,10 @@ class CloudPeCmpAPI
     /**
      * List security groups
      */
-    public function listSecurityGroups(string $projectId, string $region = ''): array
+    public function listSecurityGroups(string $projectId): array
     {
         try {
             $params = ['project_id' => $projectId];
-            if (!empty($region)) {
-                $params['region'] = $region;
-            }
 
             $query = http_build_query($params);
             $response = $this->apiRequest('/security-groups?' . $query, 'GET');
@@ -663,13 +695,10 @@ class CloudPeCmpAPI
     /**
      * List volume types with pricing
      */
-    public function listVolumeTypes(string $region = ''): array
+    public function listVolumeTypes(): array
     {
         try {
             $url = '/volumes/types';
-            if (!empty($region)) {
-                $url .= '?region=' . urlencode($region);
-            }
 
             $response = $this->apiRequest($url, 'GET');
 
@@ -709,13 +738,10 @@ class CloudPeCmpAPI
     /**
      * List volumes for a project
      */
-    public function listVolumes(string $projectId, string $region = '', string $vmId = ''): array
+    public function listVolumes(string $projectId, string $vmId = ''): array
     {
         try {
             $params = ['project_id' => $projectId];
-            if (!empty($region)) {
-                $params['region'] = $region;
-            }
             if (!empty($vmId)) {
                 $params['vm_id'] = $vmId;
             }

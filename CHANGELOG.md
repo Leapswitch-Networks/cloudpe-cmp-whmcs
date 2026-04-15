@@ -2,6 +2,28 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.2] - 2026-04-15
+
+### Added
+- **Security Groups tab** in CloudPe CMP Admin — load from API, single unified table, save selection with display names. Was coded but not wired into the nav.
+- **Storage Policies (Volume Types) tab** — new full tab to load, select, and name volume types from the CMP API.
+- **Region selector** on Images and Flavors tabs — filter API loads by region before clicking Load from API.
+- **IP Assignment** module config option — dropdown: IPv4 Only / IPv6 Only / Both IPv4 and IPv6.
+- **Network** module config option — dropdown loaded from `/networks` API endpoint; defaults to project default if left blank.
+- `listRegions()` and `listNetworks()` methods in `CloudPeCmpAPI`.
+- `region_id` query param support in `listFlavors()` and `listImages()`.
+- **Config Group creator** now lists all existing WHMCS configurable option groups with edit links; Storage Policy included as a 4th option in newly created groups.
+- Dashboard now shows Security Group and Storage Policy configured counts.
+
+### Changed
+- **Unified single-table UI** for Images, Flavors, Projects, Security Groups, and Storage Policies: saved items shown checked on page load; Load from API appends unchecked new items; unchecking a row shows a confirmation dialog before removing; numbered rows (#); no more two-step select → apply flow.
+- `cloudpe_cmp_VolumeTypeLoader` now reads from admin-saved `selected_volume_types` first (like other loaders), so the Storage Policy dropdown in Module Settings is populated.
+
+### Fixed
+- `listVolumes` called with stale empty-string arg (`listVolumes($projectId, '', $vmId)`) in `hooks.php` after region removal — now `listVolumes($projectId, $vmId)`.
+- Nameserver prefix validation error "You must enter a prefix for both nameservers" on order continue — JS now pre-fills `ns1prefix`/`ns2prefix` with `ns1`/`ns2` so WHMCS server-side validation passes while the fields stay hidden.
+- Release description overflow — removed `white-space:pre-wrap`, `<li>` items now wrapped in `<ul>`, container uses `overflow:hidden`.
+
 ## [1.1.1-beta.1] - 2026-04-15
 
 ### Changed

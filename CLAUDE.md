@@ -87,7 +87,8 @@ After construction, API endpoints are relative to `/api/v1`:
 - Instances: `/instances`, `/instances/{id}`, `/instances/{id}/actions`
 - Flavors: `/flavors`
 - Images: `/images`
-- Regions: `/regions`
+- Regions: `/regions` (admin filtering only — not a customer config option)
+- Networks: `/networks`
 - Volumes: `/volumes`, `/volumes/types`, `/volumes/{id}/extend`
 - Security Groups: `/security-groups`
 - Console: `/instances/{id}/console`, `/instances/{id}/console/share`
@@ -154,9 +155,13 @@ CloudPe CMP API (FastAPI):
 
 ## Deployment Release Protocol
 
-**DEFAULT: Always build a beta release unless the user explicitly says "final release", "stable release", or "release vX.X.X".**
+**NEVER build or publish a release automatically.** After completing any feature or fix, always stop and suggest:
 
-### Beta Release (default)
+> "Work is done. Would you like me to build a **beta release** (`vX.X.X-beta.N`) or a **final/stable release** (`vX.X.X`)?"
+
+Only proceed with a release when the user explicitly requests one.
+
+### Beta Release (on explicit request)
 
 Version format: `vX.X.X-beta.N` (e.g. `v1.1.1-beta.1`, increment N for successive betas)
 
@@ -170,7 +175,7 @@ Steps:
 7. Remove local ZIP
 8. Update `version.json` download_url
 
-### Final / Stable Release (only when explicitly instructed)
+### Final / Stable Release (on explicit request)
 
 Version format: `vX.X.X`
 
