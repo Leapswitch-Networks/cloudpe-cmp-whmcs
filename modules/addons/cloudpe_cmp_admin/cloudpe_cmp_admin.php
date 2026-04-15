@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.6');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.7');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -200,17 +200,21 @@ function cloudpe_cmp_admin_check_update(string $updateUrl): array
  * manual redirect loop (up to 10 hops) so GitHub release asset URLs —
  * which redirect github.com → objects.githubusercontent.com — always work.
  *
- * @param string      $url       URL to fetch
- * @param int         &$httpCode Final HTTP status code (by reference)
- * @param string      &$error    cURL error string, empty on success (by ref)
- * @param string|null &$finalUrl Effective URL after all redirects (by ref)
+ * Reference params are untyped to avoid PHP 8 TypeError when callers pass
+ * uninitialised variables (typed int/string refs require the variable to
+ * already hold the correct type in strict mode).
+ *
+ * @param string $url       URL to fetch
+ * @param mixed  &$httpCode Final HTTP status code (by reference)
+ * @param mixed  &$error    cURL error string, empty on success (by ref)
+ * @param mixed  &$finalUrl Effective URL after all redirects (by ref)
  * @return string|false  Response body, or false on failure
  */
 function cloudpe_cmp_admin_download_url(
   string $url,
-  int    &$httpCode,
-  string &$error,
-  ?string &$finalUrl
+         &$httpCode,
+         &$error,
+         &$finalUrl
 ) {
   $ua      = 'CloudPe-CMP-WHMCS/' . CLOUDPE_CMP_MODULE_VERSION;
   $maxHops = 10;
@@ -290,6 +294,98 @@ function cloudpe_cmp_admin_download_url(
 }
 
 /**
+ * Install a module ZIP that already exists on disk (e.g. from an upload).
+ *
+ * Shared entry point used by both the auto-download path and the manual
+ * upload path so the extract + copy logic lives in exactly one place.
+ *
+ * @param string $zipPath Absolute path to the ZIP file on the server
+ * @return array  Keys: success (bool), message (string), stats (array)
+ */
+function cloudpe_cmp_admin_install_from_file(string $zipPath): array
+{
+  @set_time_limit(300);
+  @ignore_user_abort(true);
+
+  $tmpDir = sys_get_temp_dir() . '/cloudpe_cmp_update_' . time();
+  $stats  = ['files_written' => 0, 'files_failed' => 0, 'opcache_invalidated' => 0, 'failures' => []];
+
+  try {
+    if (!file_exists($zipPath)) {
+      throw new \Exception('ZIP file not found: ' . $zipPath);
+    }
+
+    $zip = new ZipArchive();
+    if ($zip->open($zipPath) !== true) {
+      throw new \Exception('Failed to open ZIP archive. The file may be corrupt.');
+    }
+    mkdir($tmpDir, 0755, true);
+    $zip->extractTo($tmpDir);
+    $zip->close();
+
+    // Locate modules/ directory inside the extracted archive
+    $modulesRoot = null;
+    $iterator    = new RecursiveIteratorIterator(
+      new RecursiveDirectoryIterator($tmpDir, RecursiveDirectoryIterator::SKIP_DOTS),
+      RecursiveIteratorIterator::SELF_FIRST
+    );
+    foreach ($iterator as $item) {
+      if ($item->isDir() && basename($item->getPathname()) === 'modules') {
+        $modulesRoot = $item->getPathname();
+        break;
+      }
+    }
+    if (!$modulesRoot) {
+      throw new \Exception('Could not locate modules/ directory in the archive.');
+    }
+
+    if (!defined('ROOTDIR')) {
+      throw new \Exception('ROOTDIR is not defined — run this from inside WHMCS.');
+    }
+    $whmcsRoot = ROOTDIR;
+    if (!file_exists($whmcsRoot . '/init.php') && !file_exists($whmcsRoot . '/configuration.php')) {
+      throw new \Exception('Refusing to install: ROOTDIR (' . $whmcsRoot . ') does not look like a WHMCS root.');
+    }
+
+    $dstServer = $whmcsRoot . '/modules/servers/cloudpe_cmp';
+    $dstAddon  = $whmcsRoot . '/modules/addons/cloudpe_cmp_admin';
+
+    // Backup current module before overwriting
+    $backupDir = $whmcsRoot . '/modules/cloudpe_cmp_backup_' . date('YmdHis');
+    $backupStats = [];
+    if (is_dir($dstServer)) cloudpe_cmp_admin_copy_directory($dstServer, $backupDir . '/servers/cloudpe_cmp',   $backupStats);
+    if (is_dir($dstAddon))  cloudpe_cmp_admin_copy_directory($dstAddon,  $backupDir . '/addons/cloudpe_cmp_admin', $backupStats);
+
+    $srcServer = $modulesRoot . '/servers/cloudpe_cmp';
+    $srcAddon  = $modulesRoot . '/addons/cloudpe_cmp_admin';
+    if (is_dir($srcServer)) cloudpe_cmp_admin_copy_directory($srcServer, $dstServer, $stats);
+    if (is_dir($srcAddon))  cloudpe_cmp_admin_copy_directory($srcAddon,  $dstAddon,  $stats);
+
+    $stats['backup_path'] = $backupDir;
+
+    if (function_exists('opcache_reset')) @opcache_reset();
+
+    if ($stats['files_failed'] > 0) {
+      return [
+        'success' => false,
+        'message' => 'Update partially failed. ' . $stats['files_written'] . ' written, ' . $stats['files_failed'] . ' failed. First failure: ' . ($stats['failures'][0] ?? 'unknown'),
+        'stats'   => $stats,
+      ];
+    }
+
+    return [
+      'success' => true,
+      'message' => 'Module installed successfully (' . $stats['files_written'] . ' files written, ' . $stats['opcache_invalidated'] . ' opcache entries cleared).',
+      'stats'   => $stats,
+    ];
+  } catch (\Throwable $e) {
+    return ['success' => false, 'message' => $e->getMessage(), 'stats' => $stats];
+  } finally {
+    cloudpe_cmp_admin_cleanup_temp($tmpDir);
+  }
+}
+
+/**
  * Download a release ZIP and install both module directories.
  *
  * @param string $downloadUrl Direct ZIP download URL
@@ -297,6 +393,13 @@ function cloudpe_cmp_admin_download_url(
  */
 function cloudpe_cmp_admin_install_update(string $downloadUrl): array
 {
+  // Give the download + extract + copy up to 5 minutes regardless of
+  // the server's default max_execution_time (often 30s on shared hosts).
+  @set_time_limit(300);
+  // Keep running even if the browser disconnects mid-install so the
+  // copy step always completes and we don't leave a half-written module.
+  @ignore_user_abort(true);
+
   $tmpFile = tempnam(sys_get_temp_dir(), 'cloudpe_cmp_update_') . '.zip';
   $tmpDir  = sys_get_temp_dir() . '/cloudpe_cmp_update_' . time();
 
@@ -311,141 +414,34 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
   ];
 
   try {
-    // Download ZIP.
-    // Use RETURNTRANSFER (not CURLOPT_FILE) so we can inspect the response
-    // before writing and manually follow redirects when open_basedir disables
-    // CURLOPT_FOLLOWLOCATION on the server.
+    // Download ZIP then delegate extract+install to install_from_file().
+    $dlHttpCode = 0;
+    $dlError    = '';
+    $dlFinalUrl = '';
     $zipContent = cloudpe_cmp_admin_download_url($downloadUrl, $dlHttpCode, $dlError, $dlFinalUrl);
 
     if ($dlError || $dlHttpCode !== 200 || !$zipContent) {
-      throw new \Exception(
-        'Download failed: HTTP ' . $dlHttpCode
-        . ($dlFinalUrl && $dlFinalUrl !== $downloadUrl ? ' (redirected to: ' . $dlFinalUrl . ')' : '')
-        . ($dlError ? ': ' . $dlError : '')
-      );
-    }
-
-    if (!file_put_contents($tmpFile, $zipContent)) {
-      throw new \Exception('Failed to write download to temp file.');
-    }
-    unset($zipContent); // free memory
-
-    // Extract ZIP
-    $zip = new ZipArchive();
-    if ($zip->open($tmpFile) !== true) {
-      throw new \Exception('Failed to open ZIP archive.');
-    }
-    mkdir($tmpDir, 0755, true);
-    $zip->extractTo($tmpDir);
-    $zip->close();
-
-    // Locate the modules directory inside the extracted ZIP
-    $modulesRoot = null;
-    $iterator    = new RecursiveIteratorIterator(
-      new RecursiveDirectoryIterator($tmpDir, RecursiveDirectoryIterator::SKIP_DOTS),
-      RecursiveIteratorIterator::SELF_FIRST
-    );
-    foreach ($iterator as $item) {
-      if ($item->isDir() && basename($item->getPathname()) === 'modules') {
-        $modulesRoot = $item->getPathname();
-        break;
-      }
-    }
-
-    if (!$modulesRoot) {
-      throw new \Exception('Could not locate modules/ directory in the archive.');
-    }
-
-    // WHMCS defines ROOTDIR globally - use it rather than a fragile
-    // dirname() chain (v1.0.2 got the dirname count wrong and wrote
-    // files one level above the real WHMCS root, silently because the
-    // parent directory was writable).
-    if (!defined('ROOTDIR')) {
-      throw new \Exception('ROOTDIR is not defined - run this from inside WHMCS.');
-    }
-    $whmcsRoot = ROOTDIR;
-
-    // Belt-and-suspenders: a real WHMCS root always has init.php
-    // (or configuration.php). Fail fast if that's not the case so a
-    // future misconfiguration can't silently write files somewhere
-    // unexpected.
-    if (!file_exists($whmcsRoot . '/init.php') && !file_exists($whmcsRoot . '/configuration.php')) {
-      throw new \Exception(
-        'Refusing to install: ROOTDIR (' . $whmcsRoot . ') does not look like a WHMCS root.'
-      );
-    }
-
-    $dstServer = $whmcsRoot . '/modules/servers/cloudpe_cmp';
-    $dstAddon  = $whmcsRoot . '/modules/addons/cloudpe_cmp_admin';
-    // Note: we intentionally skip an is_writable() pre-check here.
-    // On shared hosting PHP runs as the site user via suPHP/FastCGI, and
-    // is_writable() can return false for directories that copy() will
-    // actually succeed on (different effective UIDs, ACLs, etc.).
-    // Instead, per-file failures are tracked in $stats and surfaced after
-    // the attempt so the admin sees exactly which files failed and why.
-
-    // Snapshot the current module files before we overwrite them so
-    // admins can roll back if the update goes sideways. Matches the
-    // reference cloudpe-whmcs behaviour.
-    $backupDir = $whmcsRoot . '/modules/cloudpe_cmp_backup_' . date('YmdHis');
-    $backupStats = [];
-    if (is_dir($dstServer)) {
-      cloudpe_cmp_admin_copy_directory($dstServer, $backupDir . '/servers/cloudpe_cmp', $backupStats);
-    }
-    if (is_dir($dstAddon)) {
-      cloudpe_cmp_admin_copy_directory($dstAddon, $backupDir . '/addons/cloudpe_cmp_admin', $backupStats);
-    }
-
-    // Copy server module
-    $srcServer = $modulesRoot . '/servers/cloudpe_cmp';
-    if (is_dir($srcServer)) {
-      cloudpe_cmp_admin_copy_directory($srcServer, $dstServer, $stats);
-    }
-
-    // Copy addon module
-    $srcAddon = $modulesRoot . '/addons/cloudpe_cmp_admin';
-    if (is_dir($srcAddon)) {
-      cloudpe_cmp_admin_copy_directory($srcAddon, $dstAddon, $stats);
-    }
-
-    // Surface backup location in the stats so admins know where to
-    // restore from if needed.
-    $stats['backup_path'] = $backupDir;
-
-    // Nuke PHP OPcache so the next request sees the freshly-written
-    // files. Without this, the old bytecode keeps being served and
-    // the UI continues to show the previous version even though the
-    // files on disk are new.
-    if (function_exists('opcache_reset')) {
-      @opcache_reset();
-    }
-
-    if ($stats['files_failed'] > 0) {
       return [
         'success' => false,
-        'message' => 'Update partially failed. '
-          . $stats['files_written'] . ' file(s) written, '
-          . $stats['files_failed'] . ' failed. '
-          . 'First failure: ' . ($stats['failures'][0] ?? 'unknown'),
+        'message' => 'Download failed: HTTP ' . $dlHttpCode
+          . ($dlFinalUrl && $dlFinalUrl !== $downloadUrl ? ' (redirected to: ' . $dlFinalUrl . ')' : '')
+          . ($dlError ? ' — ' . $dlError : '')
+          . '. Use the Manual Install option below to upload the ZIP directly.',
         'stats'   => $stats,
       ];
     }
 
-    return [
-      'success' => true,
-      'message' => 'Module updated successfully ('
-        . $stats['files_written'] . ' files written, '
-        . $stats['opcache_invalidated'] . ' opcache entries cleared). '
-        . 'Please refresh the page.',
-      'stats'   => $stats,
-    ];
-  } catch (\Exception $e) {
+    if (!file_put_contents($tmpFile, $zipContent)) {
+      return ['success' => false, 'message' => 'Failed to write download to temp file.', 'stats' => $stats];
+    }
+    unset($zipContent);
+
+    return cloudpe_cmp_admin_install_from_file($tmpFile);
+
+  } catch (\Throwable $e) {
     return ['success' => false, 'message' => $e->getMessage(), 'stats' => $stats];
   } finally {
-    if (file_exists($tmpFile)) {
-      @unlink($tmpFile);
-    }
-    cloudpe_cmp_admin_cleanup_temp($tmpDir);
+    if (file_exists($tmpFile)) @unlink($tmpFile);
   }
 }
 
@@ -1343,8 +1339,40 @@ function cloudpe_cmp_admin_output(array $vars): void
         if (!$downloadUrl) {
           echo json_encode(['success' => false, 'message' => 'No download URL provided.']);
         } else {
-          echo json_encode(cloudpe_cmp_admin_install_update($downloadUrl));
+          // Buffer any stray PHP warnings/notices so they cannot
+          // corrupt the JSON response and trigger jQuery's error callback.
+          ob_start();
+          $installResult = cloudpe_cmp_admin_install_update($downloadUrl);
+          ob_end_clean();
+          echo json_encode($installResult);
         }
+        exit;
+
+      case 'install_from_upload':
+        // Manual ZIP upload path — works when the server cannot reach GitHub
+        // (firewall, proxy timeout, etc.). The client uploads the ZIP directly.
+        if (empty($_FILES['module_zip']['tmp_name'])) {
+          echo json_encode(['success' => false, 'message' => 'No file received. Check upload_max_filesize and post_max_size in php.ini.']);
+          exit;
+        }
+        $uploadErr = $_FILES['module_zip']['error'] ?? UPLOAD_ERR_NO_FILE;
+        if ($uploadErr !== UPLOAD_ERR_OK) {
+          $uploadMessages = [
+            UPLOAD_ERR_INI_SIZE   => 'File exceeds upload_max_filesize.',
+            UPLOAD_ERR_FORM_SIZE  => 'File exceeds MAX_FILE_SIZE.',
+            UPLOAD_ERR_PARTIAL    => 'File was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE    => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Temporary folder missing.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+            UPLOAD_ERR_EXTENSION  => 'Upload blocked by PHP extension.',
+          ];
+          echo json_encode(['success' => false, 'message' => $uploadMessages[$uploadErr] ?? "Upload error code $uploadErr."]);
+          exit;
+        }
+        ob_start();
+        $uploadResult = cloudpe_cmp_admin_install_from_file($_FILES['module_zip']['tmp_name']);
+        ob_end_clean();
+        echo json_encode($uploadResult);
         exit;
 
       case 'get_releases':
@@ -3117,6 +3145,25 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
   </div>
 
   <div class="panel panel-default">
+    <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-upload"></i> Manual Install</h3></div>
+    <div class="panel-body">
+      <p class="text-muted">
+        If automatic download fails (firewall, proxy timeout, etc.), download the ZIP from
+        <a href="https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases" target="_blank">GitHub Releases</a>
+        and upload it here.
+      </p>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <input type="file" id="manual-zip-file" accept=".zip" class="form-control" style="width:auto; max-width:320px;">
+        <button class="btn btn-primary" id="btn-manual-install">
+          <i class="fa fa-upload"></i> Upload &amp; Install
+        </button>
+        <span id="manual-install-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Installing...</span>
+      </div>
+      <div id="manual-install-result" style="display:none; margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div class="panel panel-default">
     <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-history"></i> All Releases</h3></div>
     <div class="panel-body">
       <p class="text-muted">View all available releases with release notes. You can install any version including downgrades.</p>
@@ -3236,19 +3283,33 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
           }
         }
 
-        var resultHtml = resp.success
-          ? '<div class="alert alert-success"><i class="fa fa-check"></i> ' + escapeHtml(resp.message || 'Update installed.') + detail + ' <strong>Please refresh the page.</strong></div>'
-          : '<div class="alert alert-danger"><i class="fa fa-times"></i> ' + escapeHtml(resp.message || 'Update failed.') + detail + '</div>';
-
-        if (!resp.success) {
+        if (resp.success) {
+          $('#update-result').html(
+            '<div class="alert alert-success"><i class="fa fa-check"></i> ' +
+            escapeHtml(resp.message || 'Update installed.') + detail +
+            ' Reloading in <strong><span id="cmp-reload-countdown">3</span>s</strong>...</div>'
+          ).show();
+          cmpStartReloadCountdown('cmp-reload-countdown');
+        } else {
+          $('#update-result').html(
+            '<div class="alert alert-danger"><i class="fa fa-times"></i> ' +
+            escapeHtml(resp.message || 'Update failed.') + detail + '</div>'
+          ).show();
           $('#btn-install-update').show();
         }
-        $('#update-result').html(resultHtml).show();
       },
-      error: function() {
+      error: function(xhr) {
         $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Download &amp; Install Update');
         $('#update-progress').hide();
-        $('#update-result').html('<div class="alert alert-danger">Request failed during install.</div>').show();
+        var preview = xhr.responseText ? xhr.responseText.substring(0, 400) : '(empty response)';
+        $('#update-result').html(
+          '<div class="alert alert-danger">' +
+          '<strong>Install request failed.</strong> HTTP ' + xhr.status + '.<br>' +
+          'The server may have timed out or the response was not valid JSON. ' +
+          'Try the <strong>Manual Install</strong> panel above instead.<br>' +
+          '<small class="text-muted">Response preview: ' + escapeHtml(preview) + '</small>' +
+          '</div>'
+        ).show();
       }
     });
   });
@@ -3358,37 +3419,73 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
         if (resp.stats) {
           detail = ' (' + resp.stats.files_written + ' written, ' + resp.stats.files_failed + ' failed, ' + resp.stats.opcache_invalidated + ' opcache cleared)';
         }
-        var cls = resp.success ? 'alert-success' : 'alert-danger';
-        var ico = resp.success ? 'fa-check' : 'fa-times';
+        if (resp.success) {
+          var countId = 'cmp-reload-countdown-' + Date.now();
+          $('#all-releases-container').prepend(
+            '<div class="alert alert-success"><i class="fa fa-check"></i> ' +
+            escapeHtml(resp.message || 'Installed.') + detail +
+            ' Reloading in <strong><span id="' + countId + '">3</span>s</strong>...</div>'
+          );
+          cmpStartReloadCountdown(countId);
+        } else {
+          $('#all-releases-container').prepend(
+            '<div class="alert alert-danger"><i class="fa fa-times"></i> ' +
+            escapeHtml(resp.message || 'Failed.') + detail + '</div>'
+          );
+        }
+      },
+      error: function(xhr) {
+        $('#install-progress-inline').remove();
+        var preview = xhr.responseText ? xhr.responseText.substring(0, 400) : '(empty response)';
         $('#all-releases-container').prepend(
-          '<div class="alert ' + cls + '"><i class="fa ' + ico + '"></i> ' +
-          escapeHtml(resp.message || (resp.success ? 'Installed.' : 'Failed.')) + detail +
-          (resp.success ? ' <strong>Please refresh the page.</strong>' : '') +
+          '<div class="alert alert-danger"><i class="fa fa-times-circle"></i> ' +
+          '<strong>Install request failed.</strong> HTTP ' + xhr.status + '. ' +
+          'The server may have timed out. Try the <strong>Manual Install</strong> panel instead.<br>' +
+          '<small class="text-muted">Response preview: ' + escapeHtml(preview) + '</small>' +
           '</div>'
         );
-        if (resp.success) loadAllReleases();
-      },
-      error: function() {
-        $('#install-progress-inline').remove();
-        $('#all-releases-container').prepend('<div class="alert alert-danger">Request failed during install.</div>');
       }
     });
   }
 
   function compareVersions(v1, v2) {
-    // Strip pre-release suffix for numeric comparison
-    var clean = function(v) { return (v || '').replace(/-.*$/, ''); };
-    var parts1 = clean(v1).split('.').map(Number);
-    var parts2 = clean(v2).split('.').map(Number);
-    for (var i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-      var p1 = parts1[i] || 0, p2 = parts2[i] || 0;
-      if (p1 > p2) return 1;
-      if (p1 < p2) return -1;
+    // Split "1.2.3-beta.7" into base "1.2.3" and pre-release "beta.7"
+    var parse = function(v) {
+      var idx  = (v || '').indexOf('-');
+      var base = idx === -1 ? v : v.slice(0, idx);
+      var pre  = idx === -1 ? '' : v.slice(idx + 1); // e.g. "beta.7"
+      return { base: base.split('.').map(Number), pre: pre };
+    };
+
+    var a = parse(v1), b = parse(v2);
+
+    // 1. Compare base version numbers
+    for (var i = 0; i < Math.max(a.base.length, b.base.length); i++) {
+      var n1 = a.base[i] || 0, n2 = b.base[i] || 0;
+      if (n1 > n2) return 1;
+      if (n1 < n2) return -1;
     }
-    // If versions equal numerically, pre-release is older
-    var pre1 = v1.indexOf('-') > -1, pre2 = v2.indexOf('-') > -1;
-    if (!pre1 && pre2) return 1;
-    if (pre1 && !pre2) return -1;
+
+    // 2. Stable release > pre-release of the same base
+    if (!a.pre && b.pre)  return 1;
+    if (a.pre  && !b.pre) return -1;
+    if (!a.pre && !b.pre) return 0;
+
+    // 3. Both pre-release: compare segment by segment ("beta.7" vs "beta.6")
+    var pa = a.pre.split('.'), pb = b.pre.split('.');
+    for (var j = 0; j < Math.max(pa.length, pb.length); j++) {
+      var sa = pa[j] !== undefined ? pa[j] : '0';
+      var sb = pb[j] !== undefined ? pb[j] : '0';
+      var na = parseInt(sa, 10), nb = parseInt(sb, 10);
+      // If both segments are pure numbers compare numerically, else lexically
+      if (!isNaN(na) && !isNaN(nb)) {
+        if (na > nb) return 1;
+        if (na < nb) return -1;
+      } else {
+        if (sa > sb) return 1;
+        if (sa < sb) return -1;
+      }
+    }
     return 0;
   }
 
@@ -3412,6 +3509,77 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
     // Convert remaining newlines to <br> for readability
     escaped = escaped.replace(/\n/g, '<br>');
     return escaped;
+  }
+
+  // Manual ZIP upload installer
+  $('#btn-manual-install').on('click', function() {
+    var file = $('#manual-zip-file')[0].files[0];
+    if (!file) { alert('Please select a ZIP file first.'); return; }
+    if (!file.name.match(/\.zip$/i)) { alert('Please select a .zip file.'); return; }
+
+    var formData = new FormData();
+    formData.append('action',     'install_from_upload');
+    formData.append('module_zip', file);
+
+    var btn = $(this).prop('disabled', true);
+    $('#manual-install-loading').show();
+    $('#manual-install-result').hide();
+
+    $.ajax({
+      url:         cmpModuleUrl,
+      type:        'POST',
+      data:        formData,
+      dataType:    'json',
+      processData: false,
+      contentType: false,
+      success: function(resp) {
+        btn.prop('disabled', false);
+        $('#manual-install-loading').hide();
+        var detail = '';
+        if (resp.stats) {
+          detail = ' (' + resp.stats.files_written + ' written, ' + resp.stats.files_failed + ' failed, ' + resp.stats.opcache_invalidated + ' opcache cleared)';
+        }
+        if (resp.success) {
+          var countId = 'cmp-manual-countdown-' + Date.now();
+          $('#manual-install-result').html(
+            '<div class="alert alert-success"><i class="fa fa-check"></i> ' +
+            escapeHtml(resp.message || 'Installed.') + detail +
+            ' Reloading in <strong><span id="' + countId + '">3</span>s</strong>...</div>'
+          ).show();
+          cmpStartReloadCountdown(countId);
+        } else {
+          $('#manual-install-result').html(
+            '<div class="alert alert-danger"><i class="fa fa-times"></i> ' +
+            escapeHtml(resp.message || 'Install failed.') + detail + '</div>'
+          ).show();
+        }
+      },
+      error: function(xhr) {
+        btn.prop('disabled', false);
+        $('#manual-install-loading').hide();
+        var preview = xhr.responseText ? xhr.responseText.substring(0, 300) : '(empty)';
+        $('#manual-install-result').html(
+          '<div class="alert alert-danger"><i class="fa fa-times"></i> ' +
+          'Upload request failed (HTTP ' + xhr.status + '). ' +
+          'Check <code>upload_max_filesize</code> and <code>post_max_size</code> in php.ini.<br>' +
+          '<small class="text-muted">' + escapeHtml(preview) + '</small></div>'
+        ).show();
+      }
+    });
+  });
+
+  // Countdown timer that updates the element with id=countId then reloads the page.
+  function cmpStartReloadCountdown(countId) {
+    var n = 3;
+    var t = setInterval(function() {
+      n--;
+      var el = document.getElementById(countId);
+      if (el) el.textContent = n;
+      if (n <= 0) {
+        clearInterval(t);
+        location.reload();
+      }
+    }, 1000);
   }
   </script>
   <?php

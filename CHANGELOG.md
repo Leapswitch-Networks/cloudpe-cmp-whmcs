@@ -2,6 +2,15 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.7] - 2026-04-15
+
+### Fixed
+- **"Request failed during install" on upgrade/downgrade** — added `set_time_limit(300)` and `ignore_user_abort(true)` at the start of the install function so PHP doesn't time out on shared hosts with a 30s default limit, and the copy step completes even if the browser disconnects mid-install.
+- **Improved error message** when the install AJAX call fails: now shows a clearer message suggesting the user check whether files were updated and refresh.
+
+### Changed
+- **Auto-reload after upgrade/downgrade** — on successful install the page now automatically reloads after a 3-second countdown instead of showing a static "Please refresh the page" message.
+
 ## [1.1.1-beta.6] - 2026-04-15
 
 ### Fixed
