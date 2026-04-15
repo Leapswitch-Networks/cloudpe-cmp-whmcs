@@ -2,6 +2,27 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.3] - 2026-04-15
+
+### Added
+- **Region column** in Images and Flavors tables — region tagged per item when loaded from API.
+- **Flavor Group column** in Flavors table — group fetched from `/flavor-groups` endpoint and persisted per flavor.
+- **Region option** in Config Group creator — fetched live from API, added as first option so customers pick region first.
+- **Server Size grouped display names** in Config Group — format `"Group: FlavorName"` (e.g. `"Standard: m1.large"`).
+- `listFlavorGroups(regionId)` method in CloudPeCmpAPI.
+- `save_flavor_regions`, `save_image_regions`, `load_flavor_groups` AJAX handlers.
+
+### Changed
+- **Images/Flavors tabs**: region selector is now **required** before loading (shows warning if skipped).
+- **Security Groups tab**: replaced hardcoded server Access Hash with a project dropdown (from saved projects list) + manual input fallback; added region selector.
+- **Storage Policies tab**: region selector added and **required** (API requires `region` param).
+- **Config Group listing**: now shows only groups linked to `cloudpe_cmp` products (not all WHMCS groups).
+- `listVolumeTypes(regionId)` — passes `region` query param to API.
+- `listSecurityGroups(projectId, regionId)` — passes optional `region` param.
+
+### Fixed
+- Nameserver prefix validation: JS now converts `ns1prefix`/`ns2prefix` inputs to `type="hidden"` — most reliable approach since hidden inputs are always submitted with the form and skipped by client-side required-field checks.
+
 ## [1.1.1-beta.2] - 2026-04-15
 
 ### Added

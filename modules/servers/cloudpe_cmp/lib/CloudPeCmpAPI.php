@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.1
+ * @version 1.1.1-beta.3
  */
 
 class CloudPeCmpAPI
@@ -667,12 +667,18 @@ class CloudPeCmpAPI
     }
 
     /**
-     * List security groups
+     * List security groups for a project (and optional region).
+     *
+     * @param string $projectId Project UUID (required by API)
+     * @param string $regionId  Optional region ID / slug
      */
-    public function listSecurityGroups(string $projectId): array
+    public function listSecurityGroups(string $projectId, string $regionId = ''): array
     {
         try {
             $params = ['project_id' => $projectId];
+            if (!empty($regionId)) {
+                $params['region'] = $regionId;
+            }
 
             $query = http_build_query($params);
             $response = $this->apiRequest('/security-groups?' . $query, 'GET');
@@ -693,12 +699,21 @@ class CloudPeCmpAPI
     // =========================================================================
 
     /**
-     * List volume types with pricing
+     * List volume types (storage policies) for a region.
+     *
+     * The CMP API requires `region` query param.
+     *
+     * @param string $regionId Region ID / slug (required by API)
      */
-    public function listVolumeTypes(): array
+    public function listVolumeTypes(string $regionId = ''): array
     {
         try {
-            $url = '/volumes/types';
+            $params = [];
+            if (!empty($regionId)) {
+                $params['region'] = $regionId;
+            }
+            $query = http_build_query($params);
+            $url = '/volumes/types' . ($query ? '?' . $query : '');
 
             $response = $this->apiRequest($url, 'GET');
 
@@ -706,11 +721,45 @@ class CloudPeCmpAPI
                 if ($response['httpCode'] == 404) {
                     return ['success' => true, 'volume_types' => []];
                 }
-                return $response;
+                $detail = $response['error'] ?? '';
+                if (!empty($response['body'])) {
+                    $detail .= ' | ' . substr($response['body'], 0, 300);
+                }
+                return ['success' => false, 'error' => $detail, 'httpCode' => $response['httpCode'] ?? 0];
             }
 
             $result = json_decode($response['body'], true);
             return ['success' => true, 'volume_types' => $result];
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * List flavor groups for a region.
+     *
+     * @param string $regionId Optional region ID / slug
+     */
+    public function listFlavorGroups(string $regionId = ''): array
+    {
+        try {
+            $params = [];
+            if (!empty($regionId)) {
+                $params['region_id'] = $regionId;
+            }
+            $query = http_build_query($params);
+            $response = $this->apiRequest('/flavor-groups' . ($query ? '?' . $query : ''), 'GET');
+
+            if (!$response['success']) {
+                if (($response['httpCode'] ?? 0) === 404) {
+                    return ['success' => true, 'groups' => []];
+                }
+                return $response;
+            }
+
+            $result = json_decode($response['body'], true);
+            $groups = $result['items'] ?? $result['groups'] ?? (is_array($result) ? $result : []);
+            return ['success' => true, 'groups' => $groups];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }

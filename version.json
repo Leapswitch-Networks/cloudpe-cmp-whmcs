@@ -1,22 +1,17 @@
 {
-    "version": "1.1.1-beta.2",
+    "version": "1.1.1-beta.3",
     "released": "2026-04-15",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.2/cloudpe-cmp-whmcs-module-v1.1.1-beta.2.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.3/cloudpe-cmp-whmcs-module-v1.1.1-beta.3.zip",
     "changelog": [
-        "Admin UI: unified single table for Images, Flavors, Projects, Security Groups, Storage Policies — saved items shown checked, Load from API appends unchecked new items, uncheck with confirmation removes",
-        "Admin: Region selector dropdown on Images and Flavors tabs for region-filtered API loading",
-        "Admin: Security Groups tab now accessible (was coded but not wired to nav)",
-        "Admin: New Storage Policies (Volume Types) tab with load/save support",
-        "Admin: Create Config Group now shows all existing config groups with edit links; Storage Policy included as 4th option in new groups",
-        "Admin: Dashboard shows Security Group and Storage Policy counts",
-        "Module Settings: Storage Policy (Volume Type) loader now reads from admin-saved selection, fixing blank dropdown",
-        "Module Settings: Added IP Assignment config option (IPv4/IPv6/Both)",
-        "Module Settings: Added Network config option with loader",
-        "Fix: listVolumes called with stale empty-string region arg in hooks.php",
-        "Fix: Nameserver prefix validation error on order — JS now pre-fills ns1prefix/ns2prefix so WHMCS validation passes",
-        "Fix: Release description overflow — removed white-space:pre-wrap, li items wrapped in ul",
-        "API: listRegions(), listNetworks() added; region_id param added to listFlavors/listImages"
+        "Region required for Images/Flavors loading — region selector mandatory, region column in tables",
+        "Flavors: flavor group fetched from /flavor-groups and shown in table + used as prefix in config group",
+        "Security Groups: project + region selectors; project dropdown from saved projects + manual input fallback",
+        "Storage Policies: region required by API — region selector added to Volume Types tab",
+        "Config Group: Region added as first option; Server Size uses grouped display names (Group: FlavourName)",
+        "Config Group listing: only shows groups linked to cloudpe_cmp products",
+        "Nameserver fix: convert ns prefix inputs to type=hidden (most reliable form submission approach)",
+        "API: listVolumeTypes(regionId), listFlavorGroups(regionId), listSecurityGroups(projectId, regionId)"
     ]
 }

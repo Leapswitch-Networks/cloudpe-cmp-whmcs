@@ -41,19 +41,19 @@ function cloudpe_cmp_hide_ns_html(): string
 </style>
 <script>
   (function() {
+    // Convert ns1/ns2 prefix inputs to hidden with default values.
+    // Using type="hidden" is the most reliable approach:
+    //   - the value is always submitted (no display:none gotchas)
+    //   - WHMCS server-side validation receives the value and passes
+    //   - client-side required-field checks skip hidden inputs
     function hideNsFields() {
-      var names = ['ns1', 'ns2', 'ns1prefix', 'ns2prefix'];
-      names.forEach(function(name) {
+      var prefixDefaults = { ns1: 'ns1', ns2: 'ns2', ns1prefix: 'ns1', ns2prefix: 'ns2' };
+      Object.keys(prefixDefaults).forEach(function(name) {
         document.querySelectorAll('input[name="' + name + '"]').forEach(function(n) {
-          // Pre-fill with a dummy value so WHMCS server-side validation
-          // doesn't reject the form with "You must enter a prefix for
-          // both nameservers".
-          if (!n.value) {
-            n.value = (name === 'ns1' || name === 'ns1prefix') ? 'ns1' : 'ns2';
-          }
-          // Walk up to the closest field wrapper (Bootstrap .form-group,
-          // a <tr> row, the generic .row, or the parent node) and hide it.
-          var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row') || n.parentNode;
+          if (!n.value) n.value = prefixDefaults[name];
+          n.type = 'hidden'; // keeps value in form submission, removes from UI
+          // Also hide any visible wrapper in case a label/group lingers
+          var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row');
           if (wrapper) wrapper.style.display = 'none';
         });
         document.querySelectorAll('label[for="' + name + '"]').forEach(function(l) {
@@ -61,36 +61,12 @@ function cloudpe_cmp_hide_ns_html(): string
           if (wrapper) wrapper.style.display = 'none';
         });
       });
-      // Some admin-area product-edit templates don't link label[for] to
-      // the prefix inputs, but do put the word "Nameserver" in adjacent
-      // <td>/<th> cells. Hide the containing row when we detect that.
-      document.querySelectorAll('tr').forEach(function(tr) {
-        if (!tr.querySelector('input[name="ns1prefix"], input[name="ns2prefix"]')) return;
-        tr.style.display = 'none';
-      });
-    }
-
-    // Also ensure fields are pre-filled just before any form submits,
-    // in case the DOM changed after initial hide (e.g. Vue/React re-renders).
-    function preFillOnSubmit() {
-      document.querySelectorAll('form').forEach(function(form) {
-        form.addEventListener('submit', function() {
-          var ns1p = form.querySelector('input[name="ns1prefix"]');
-          var ns2p = form.querySelector('input[name="ns2prefix"]');
-          if (ns1p && !ns1p.value) ns1p.value = 'ns1';
-          if (ns2p && !ns2p.value) ns2p.value = 'ns2';
-        }, true);
-      });
     }
 
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() {
-        hideNsFields();
-        preFillOnSubmit();
-      });
+      document.addEventListener('DOMContentLoaded', hideNsFields);
     } else {
       hideNsFields();
-      preFillOnSubmit();
     }
   })();
 </script>
