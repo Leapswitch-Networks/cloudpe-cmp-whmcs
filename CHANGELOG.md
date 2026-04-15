@@ -2,6 +2,18 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.1] - 2026-04-15
+
+### Changed
+- Removed Region column from Images and Flavors tabs. Region is a query filter on the CMP API, not a per-image/flavor property, so the column added noise without value.
+- Updates tab now matches the `cloudpe-whmcs` reference: auto-checks on load, auto-loads releases, accordion panels with Installed/Newer/Older badges, per-release Upgrade/Downgrade buttons, `compareVersions()`, `formatReleaseNotes()`, PHP/WHMCS version in Current Installation table.
+
+### Fixed
+- **"Failed to check for updates: Unknown error"** — `check_update` returned `current`/`latest` without a `success` key; JS checked `data.success` which was always `undefined`.
+- **Release tags showed "V" not version** — `get_all_releases()` returned raw GitHub API objects; JS expected formatted fields (`version`, `download_url`). Now formats before returning, extracting `version` from `tag_name` and `download_url` from `assets[].browser_download_url`.
+- **"No Download Available"** — raw GitHub assets were not mapped to `download_url`.
+- **Release description overflowed left** — added `word-break` and `overflow-wrap` to the release notes block.
+
 ## [1.1.0] - 2026-04-14
 
 ### Fixed

@@ -1,12 +1,15 @@
 {
-    "version": "1.1.0",
-    "released": "2026-04-14",
+    "version": "1.1.1-beta.1",
+    "released": "2026-04-15",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.0/cloudpe-cmp-whmcs-module-v1.1.0.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.1/cloudpe-cmp-whmcs-module-v1.1.1-beta.1.zip",
     "changelog": [
-        "Region column now shows '(All)' instead of blank when All Regions is selected for images or flavors",
-        "Loading with All Regions shows an info banner explaining why the total count may exceed the sum of individual regions (images available across multiple regions are counted once per call)",
-        "Loading with a specific region hides the info banner and shows only that region's results"
+        "Removed Region column from Images and Flavors tabs",
+        "Updates tab matches reference: auto-check/load, accordion panels, Upgrade/Downgrade buttons, compareVersions, formatReleaseNotes, PHP/WHMCS version shown",
+        "Fixed: check_update always showed 'Failed' due to missing success key in response",
+        "Fixed: release tags showed 'V' - get_all_releases now formats raw GitHub API data into version/download_url fields",
+        "Fixed: No Download Available - browser_download_url now correctly mapped from assets",
+        "Fixed: release description overflowed left side"
     ]
 }

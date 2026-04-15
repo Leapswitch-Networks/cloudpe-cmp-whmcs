@@ -154,8 +154,27 @@ CloudPe CMP API (FastAPI):
 
 ## Deployment Release Protocol
 
-When user prompts to deploy a release, confirm each step:
+**DEFAULT: Always build a beta release unless the user explicitly says "final release", "stable release", or "release vX.X.X".**
 
+### Beta Release (default)
+
+Version format: `vX.X.X-beta.N` (e.g. `v1.1.1-beta.1`, increment N for successive betas)
+
+Steps:
+1. Update `CLOUDPE_CMP_MODULE_VERSION` to `X.X.X-beta.N`
+2. Update `version.json` version + download_url to beta tag
+3. Update `CHANGELOG.md` with `## [X.X.X-beta.N]` entry
+4. Commit + push to `main`
+5. Create ZIP: `zip -r cloudpe-cmp-whmcs-module-vX.X.X-beta.N.zip modules/`
+6. `gh release create vX.X.X-beta.N ... --prerelease`
+7. Remove local ZIP
+8. Update `version.json` download_url
+
+### Final / Stable Release (only when explicitly instructed)
+
+Version format: `vX.X.X`
+
+Steps:
 1. Prepare branch and push
 2. Squash merge to main
 3. Update CHANGELOG.md

@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.0');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.1');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -96,11 +96,47 @@ function cloudpe_cmp_admin_get_all_releases(): array
   curl_close($ch);
 
   if ($error || $httpCode !== 200) {
-    return [];
+    return ['success' => false, 'error' => $error ?: "HTTP $httpCode", 'releases' => []];
   }
 
-  $releases = json_decode($body, true);
-  return is_array($releases) ? $releases : [];
+  $raw = json_decode($body, true);
+  if (!is_array($raw)) {
+    return ['success' => false, 'error' => 'Invalid response from GitHub', 'releases' => []];
+  }
+
+  // Normalise raw GitHub API objects into the shape the JS accordion
+  // expects: version, tag, name, body, published_at, download_url,
+  // html_url, prerelease.  This mirrors the cloudpe-whmcs reference.
+  $formatted = [];
+  foreach ($raw as $release) {
+    // Find the ZIP asset
+    $downloadUrl = '';
+    foreach ($release['assets'] ?? [] as $asset) {
+      if (stripos($asset['name'], '.zip') !== false) {
+        $downloadUrl = $asset['browser_download_url'] ?? '';
+        break;
+      }
+    }
+
+    $formatted[] = [
+      'version'      => ltrim($release['tag_name'] ?? '', 'v'),
+      'tag'          => $release['tag_name'] ?? '',
+      'name'         => $release['name'] ?? '',
+      'body'         => $release['body'] ?? '',
+      'published_at' => isset($release['published_at'])
+                        ? date('Y-m-d H:i', strtotime($release['published_at']))
+                        : '',
+      'download_url' => $downloadUrl,
+      'html_url'     => $release['html_url'] ?? '',
+      'prerelease'   => (bool)($release['prerelease'] ?? false),
+    ];
+  }
+
+  return [
+    'success'         => true,
+    'releases'        => $formatted,
+    'current_version' => CLOUDPE_CMP_MODULE_VERSION,
+  ];
 }
 
 /**
@@ -125,29 +161,33 @@ function cloudpe_cmp_admin_check_update(string $updateUrl): array
 
   if ($error || $httpCode !== 200) {
     return [
-      'current'          => CLOUDPE_CMP_MODULE_VERSION,
-      'latest'           => null,
-      'update_available' => false,
-      'error'            => $error ?: "HTTP $httpCode",
+      'success'         => false,
+      'current_version' => CLOUDPE_CMP_MODULE_VERSION,
+      'latest_version'  => null,
+      'update_available'=> false,
+      'error'           => $error ?: "HTTP $httpCode",
     ];
   }
 
   $data = json_decode($body, true);
   if (!is_array($data) || empty($data['version'])) {
     return [
-      'current'          => CLOUDPE_CMP_MODULE_VERSION,
-      'latest'           => null,
-      'update_available' => false,
-      'error'            => 'Invalid version manifest',
+      'success'         => false,
+      'current_version' => CLOUDPE_CMP_MODULE_VERSION,
+      'latest_version'  => null,
+      'update_available'=> false,
+      'error'           => 'Invalid version manifest received from update server.',
     ];
   }
 
   return [
-    'current'          => CLOUDPE_CMP_MODULE_VERSION,
-    'latest'           => $data['version'],
-    'download_url'     => $data['download_url'] ?? '',
-    'update_available' => version_compare($data['version'], CLOUDPE_CMP_MODULE_VERSION, '>'),
-    'changelog'        => $data['changelog'] ?? [],
+    'success'         => true,
+    'current_version' => CLOUDPE_CMP_MODULE_VERSION,
+    'latest_version'  => $data['version'],
+    'download_url'    => $data['download_url'] ?? '',
+    'update_available'=> version_compare($data['version'], CLOUDPE_CMP_MODULE_VERSION, '>'),
+    'changelog'       => $data['changelog'] ?? [],
+    'released'        => $data['released'] ?? '',
   ];
 }
 
@@ -455,7 +495,7 @@ function cloudpe_cmp_admin_get_setting(int $serverId, string $key, $default = nu
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), images (array)|error (string)
  */
-function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): array
+function cloudpe_cmp_admin_load_images(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -477,7 +517,7 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): arra
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listImages($region);
+    $result = $api->listImages();
 
     if (!$result['success']) {
       $msg = $result['error'] ?? 'Failed to load images.';
@@ -490,17 +530,13 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): arra
     $images = [];
     foreach ((array)($result['images'] ?? []) as $img) {
       $id = $img['id'] ?? $img['slug'] ?? '';
-      // The CMP API does not embed a region slug on each image object;
-      // region is a query filter. We stamp the fetched region onto every
-      // returned item so the UI can display and save it.
       $images[] = [
-        'id'     => $id,
-        'name'   => $img['name'] ?? $img['display_name'] ?? $id,
-        'region' => $region,
+        'id'   => $id,
+        'name' => $img['name'] ?? $img['display_name'] ?? $id,
       ];
     }
 
-    return ['success' => true, 'images' => $images, 'region' => $region];
+    return ['success' => true, 'images' => $images];
   } catch (\Exception $e) {
     return ['success' => false, 'error' => $e->getMessage()];
   }
@@ -512,7 +548,7 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $region = ''): arra
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), flavors (array)|error (string)
  */
-function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): array
+function cloudpe_cmp_admin_load_flavors(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -534,7 +570,7 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): arr
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listFlavors($region);
+    $result = $api->listFlavors();
 
     if (!$result['success']) {
       $msg = $result['error'] ?? 'Failed to load flavors.';
@@ -547,8 +583,6 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): arr
     $flavors = [];
     foreach ((array)($result['flavors'] ?? []) as $flv) {
       $id = $flv['id'] ?? $flv['slug'] ?? '';
-      // Region is a query filter on the CMP API, not a per-item field;
-      // stamp the requested region onto every returned flavor.
       $flavors[] = [
         'id'        => $id,
         'name'      => $flv['name'] ?? $flv['display_name'] ?? $id,
@@ -556,11 +590,10 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $region = ''): arr
         'memory_gb' => isset($flv['ram'])
           ? round($flv['ram'] / 1024, 1)
           : ($flv['memory_gb'] ?? $flv['memory'] ?? 0),
-        'region'    => $region,
       ];
     }
 
-    return ['success' => true, 'flavors' => $flavors, 'region' => $region];
+    return ['success' => true, 'flavors' => $flavors];
   } catch (\Exception $e) {
     return ['success' => false, 'error' => $e->getMessage()];
   }
@@ -1006,16 +1039,20 @@ function cloudpe_cmp_admin_output(array $vars): void
         exit;
 
       case 'get_releases':
-        $releases = cloudpe_cmp_admin_get_all_releases();
-        echo json_encode(['success' => true, 'releases' => $releases]);
+        // cloudpe_cmp_admin_get_all_releases() already returns
+        // {success, releases:[...], current_version} — echo it directly
+        // instead of wrapping again (wrapping caused data.releases to be
+        // the inner object, not the array, so release.version was always
+        // undefined and version tags showed as bare "v").
+        echo json_encode(cloudpe_cmp_admin_get_all_releases());
         exit;
 
       case 'load_images':
-        echo json_encode(cloudpe_cmp_admin_load_images($serverId, trim($_POST['region'] ?? '')));
+        echo json_encode(cloudpe_cmp_admin_load_images($serverId));
         exit;
 
       case 'load_flavors':
-        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId, trim($_POST['region'] ?? '')));
+        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId));
         exit;
 
       case 'load_projects':
@@ -1078,16 +1115,6 @@ function cloudpe_cmp_admin_output(array $vars): void
         $names = $_POST['names'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'flavor_names', $names);
         echo json_encode(['success' => true, 'message' => 'Flavor display names saved.']);
-        exit;
-
-      case 'save_image_regions':
-        cloudpe_cmp_admin_save_setting($serverId, 'image_regions', $_POST['regions'] ?? []);
-        echo json_encode(['success' => true]);
-        exit;
-
-      case 'save_flavor_regions':
-        cloudpe_cmp_admin_save_setting($serverId, 'flavor_regions', $_POST['regions'] ?? []);
-        echo json_encode(['success' => true]);
         exit;
 
       case 'save_image_prices':
@@ -1325,26 +1352,14 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
   $savedImages  = cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
   $imageNames   = cloudpe_cmp_admin_get_setting($serverId, 'image_names', []);
   $imagePrices  = cloudpe_cmp_admin_get_setting($serverId, 'image_prices', []);
-  $imageRegions = cloudpe_cmp_admin_get_setting($serverId, 'image_regions', []);
   ?>
   <div class="cmp-section">
     <h4>Images</h4>
-    <div class="form-inline" style="margin-bottom:6px;">
-      <div class="form-group">
-        <label for="img-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
-        <select id="img-region-select" class="form-control" style="width:220px; margin-right:8px;">
-          <option value="">Loading regions...</option>
-        </select>
-      </div>
+    <div style="margin-bottom:6px;">
       <button class="btn btn-primary" id="btn-load-images">
         <i class="fa fa-refresh"></i> Load from API
       </button>
     </div>
-    <p class="text-muted" style="margin-bottom:10px; font-size:12px;">
-      <i class="fa fa-info-circle"></i>
-      Platform images are typically available in all regions. Select a region to tag loaded images
-      for deployment tracking — the list itself may not change per region.
-    </p>
     <div id="images-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading images...</div>
     <div id="images-error" class="alert alert-danger cmp-alert"></div>
     <div id="images-container">
@@ -1362,7 +1377,6 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
           <tr>
             <th>Image ID</th>
             <th>Display Name</th>
-            <th>Region</th>
             <th>Monthly Price (add-on)</th>
             <th>Action</th>
           </tr>
@@ -1373,12 +1387,10 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
             // Show ID only if no real name has been persisted yet
             $displayName = ($savedName !== '' && $savedName !== $imgId) ? $savedName : $imgId;
           ?>
-          <tr data-id="<?php echo htmlspecialchars($imgId); ?>"
-              data-region="<?php echo htmlspecialchars($imageRegions[$imgId] ?? ''); ?>">
+          <tr data-id="<?php echo htmlspecialchars($imgId); ?>">
             <td><?php echo htmlspecialchars($imgId); ?></td>
             <td><input type="text" class="form-control input-sm img-name"
                  value="<?php echo htmlspecialchars($displayName); ?>"></td>
-            <td><?php echo htmlspecialchars($imageRegions[$imgId] ?? '—'); ?></td>
             <td><input type="number" step="0.01" min="0" class="form-control input-sm img-price"
                  value="<?php echo htmlspecialchars($imagePrices[$imgId] ?? '0'); ?>"></td>
             <td><button class="btn btn-xs btn-danger btn-remove-image">Remove</button></td>
@@ -1398,63 +1410,24 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var serverId = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
 
-    // Session caches built on Load from API
-    var loadedImageNames   = {};
-    var loadedImageRegions = {};
-
-    // Populate the region selector on page load
-    $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, null, 'json')
-      .done(function(resp) {
-        // Reuse the regions list returned alongside projects
-        if (resp && resp.regions && resp.regions.length) {
-          var sel = $('#img-region-select').empty().append('<option value="">(all regions)</option>');
-          $.each(resp.regions, function(i, r) {
-            sel.append('<option value="' + $('<span>').text(r.slug).html() + '">'
-              + $('<span>').text(r.name + ' (' + r.slug + ')').html() + '</option>');
-          });
-        } else {
-          $('#img-region-select').empty().append('<option value="">(no regions found – enter manually)</option>');
-        }
-      });
+    // Session cache built on Load from API
+    var loadedImageNames = {};
 
     $('#btn-load-images').on('click', function() {
-      var region = $('#img-region-select').val();
       $('#images-loading').show();
       $('#images-error').hide();
-      $.post(moduleUrl, { action: 'load_images', server_id: serverId, region: region }, function(resp) {
+      $.post(moduleUrl, { action: 'load_images', server_id: serverId }, function(resp) {
         $('#images-loading').hide();
         if (!resp.success) {
           $('#images-error').text(resp.error || 'Failed to load images.').show();
           return;
         }
-        loadedImageNames   = {};
-        loadedImageRegions = {};
-        // The API returns region as a filter, not per-item; the loader
-        // stamps the query region on every returned object so we can
-        // pre-fill the Region column automatically.
-        // When no region filter was used, stamp '(All)' so the column
-        // is never blank and the admin can see these images came from
-        // the unfiltered "all regions" call.
-        var fetchedRegion = resp.region || region || '(All)';
+        loadedImageNames = {};
         $.each(resp.images, function(i, img) {
-          loadedImageNames[img.id]   = img.name;
-          loadedImageRegions[img.id] = fetchedRegion;
+          loadedImageNames[img.id] = img.name;
         });
 
-        // Show count + note if "All" was selected
-        if (!region) {
-          $('#images-error')
-            .removeClass('alert-danger')
-            .addClass('alert-info')
-            .html('<i class="fa fa-info-circle"></i> Loaded <strong>' + resp.images.length +
-              '</strong> images (all regions combined). This count may exceed the sum of ' +
-              'individual regions because some images are available across multiple regions.')
-            .show();
-        } else {
-          $('#images-error').hide().removeClass('alert-info').addClass('alert-danger');
-        }
-
-        renderImagesTable(resp.images, fetchedRegion);
+        renderImagesTable(resp.images);
       }, 'json').fail(function() {
         $('#images-loading').hide();
         $('#images-error').text('Request failed. Check server connectivity.').show();
@@ -1467,27 +1440,22 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       return (s && s !== id) ? s : (loadedImageNames[id] || id);
     }
 
-    function renderImagesTable(images, regionLabel) {
-      var savedImages  = <?php echo json_encode((array)$savedImages); ?>;
-      var imageNames   = <?php echo json_encode((object)($imageNames  ?: new stdClass())); ?>;
-      var imageRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
-      var imagePrices  = <?php echo json_encode((object)($imagePrices  ?: new stdClass())); ?>;
-      regionLabel = regionLabel || '(All)';
+    function renderImagesTable(images) {
+      var savedImages = <?php echo json_encode((array)$savedImages); ?>;
+      var imageNames  = <?php echo json_encode((object)($imageNames  ?: new stdClass())); ?>;
+      var imagePrices = <?php echo json_encode((object)($imagePrices  ?: new stdClass())); ?>;
 
       var html = '<table class="table table-bordered cmp-resource-table"><thead><tr>' +
         '<th><input type="checkbox" id="check-all-images"> All</th>' +
-        '<th>Image ID</th><th>Name</th><th>Region</th>' +
+        '<th>Image ID</th><th>Name</th>' +
         '</tr></thead><tbody>';
 
       $.each(images, function(i, img) {
         var checked = (savedImages.indexOf(img.id) !== -1) ? 'checked' : '';
-        // Each row's region is the fetch-time region label (never blank)
-        var rowRegion = loadedImageRegions[img.id] || regionLabel;
         html += '<tr data-id="' + $('<span>').text(img.id).html() + '">' +
           '<td><input type="checkbox" class="img-check" value="' + $('<span>').text(img.id).html() + '" ' + checked + '></td>' +
           '<td>' + $('<span>').text(img.id).html() + '</td>' +
           '<td>' + $('<span>').text(img.name).html() + '</td>' +
-          '<td>' + $('<span>').text(rowRegion).html() + '</td>' +
           '</tr>';
       });
 
@@ -1501,14 +1469,11 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       });
 
       $('#btn-apply-image-selection').on('click', function() {
-        var selected = [], regionsByRow = {};
+        var selected = [];
         $('#images-container tbody tr').each(function() {
           var row = $(this), id = row.data('id');
           if (row.find('.img-check').is(':checked')) {
             selected.push(id);
-            // Capture region from the fetch table row
-            var cells = row.find('td');
-            regionsByRow[id] = cells.eq(3).text().trim();
           }
         });
 
@@ -1516,24 +1481,20 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
           if (resp.success) {
             var tbody = $('#images-config-table tbody');
             tbody.empty();
-            var namesToPersist = {}, regionsToPersist = {};
+            var namesToPersist = {};
             $.each(selected, function(i, imgId) {
-              var name   = bestName(imageNames, imgId);
-              var region = regionsByRow[imgId] || imageRegions[imgId] || loadedImageRegions[imgId] || '';
-              var price  = imagePrices[imgId] || '0';
-              namesToPersist[imgId]   = name;
-              regionsToPersist[imgId] = region;
-              tbody.append('<tr data-id="' + $('<span>').text(imgId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
+              var name  = bestName(imageNames, imgId);
+              var price = imagePrices[imgId] || '0';
+              namesToPersist[imgId] = name;
+              tbody.append('<tr data-id="' + $('<span>').text(imgId).html() + '">' +
                 '<td>' + $('<span>').text(imgId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm img-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td>' + $('<span>').text(region || '(All)').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-image">Remove</button></td>' +
                 '</tr>');
             });
             $('#images-saved-section').show();
-            $.post(moduleUrl, { action: 'save_image_names',   server_id: serverId, names:   namesToPersist   }, null, 'json');
-            $.post(moduleUrl, { action: 'save_image_regions', server_id: serverId, regions: regionsToPersist }, null, 'json');
+            $.post(moduleUrl, { action: 'save_image_names', server_id: serverId, names: namesToPersist }, null, 'json');
           }
         }, 'json');
       });
@@ -1544,20 +1505,18 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     });
 
     $('#btn-save-image-config').on('click', function() {
-      var names = {}, regions = {}, prices = {}, ids = [];
+      var names = {}, prices = {}, ids = [];
       $('#images-config-table tbody tr').each(function() {
         var id = $(this).data('id');
         ids.push(id);
-        names[id]   = $(this).find('.img-name').val();
-        regions[id] = $(this).data('region') || '';   // read from data attr, not an input
-        prices[id]  = $(this).find('.img-price').val();
+        names[id]  = $(this).find('.img-name').val();
+        prices[id] = $(this).find('.img-price').val();
       });
 
       $.when(
-        $.post(moduleUrl, { action: 'save_image_names',   server_id: serverId, names:   names   }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_image_regions', server_id: serverId, regions: regions }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_image_prices',  server_id: serverId, prices:  prices  }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_images',        server_id: serverId, selected_images: ids }, null, 'json')
+        $.post(moduleUrl, { action: 'save_image_names',  server_id: serverId, names:  names  }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_image_prices', server_id: serverId, prices: prices }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_images',       server_id: serverId, selected_images: ids }, null, 'json')
       ).done(function() {
         $('#images-save-msg').text('Image configuration saved successfully.').addClass('alert alert-success').show();
         setTimeout(function() { $('#images-save-msg').hide(); }, 3000);
@@ -1576,29 +1535,17 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
  */
 function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): void
 {
-  $savedFlavors  = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
-  $flavorNames   = cloudpe_cmp_admin_get_setting($serverId, 'flavor_names', []);
-  $flavorPrices  = cloudpe_cmp_admin_get_setting($serverId, 'flavor_prices', []);
-  $flavorRegions = cloudpe_cmp_admin_get_setting($serverId, 'flavor_regions', []);
+  $savedFlavors = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
+  $flavorNames  = cloudpe_cmp_admin_get_setting($serverId, 'flavor_names', []);
+  $flavorPrices = cloudpe_cmp_admin_get_setting($serverId, 'flavor_prices', []);
   ?>
   <div class="cmp-section">
     <h4>Flavors</h4>
-    <div class="form-inline" style="margin-bottom:6px;">
-      <div class="form-group">
-        <label for="flv-region-select" style="margin-right:8px;"><strong>Region:</strong></label>
-        <select id="flv-region-select" class="form-control" style="width:220px; margin-right:8px;">
-          <option value="">Loading regions...</option>
-        </select>
-      </div>
+    <div style="margin-bottom:6px;">
       <button class="btn btn-primary" id="btn-load-flavors">
         <i class="fa fa-refresh"></i> Load from API
       </button>
     </div>
-    <p class="text-muted" style="margin-bottom:10px; font-size:12px;">
-      <i class="fa fa-info-circle"></i>
-      Select a region before loading — different regions have different available flavors
-      and pricing. Load separately per region to build a complete multi-region catalog.
-    </p>
     <div id="flavors-loading" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading flavors...</div>
     <div id="flavors-error" class="alert alert-danger cmp-alert"></div>
     <div id="flavors-container">
@@ -1616,7 +1563,6 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
           <tr>
             <th>Flavor ID</th>
             <th>Display Name</th>
-            <th>Region</th>
             <th>Monthly Price</th>
             <th>Action</th>
           </tr>
@@ -1626,12 +1572,10 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
             $savedName = $flavorNames[$flvId] ?? '';
             $displayName = ($savedName !== '' && $savedName !== $flvId) ? $savedName : $flvId;
           ?>
-          <tr data-id="<?php echo htmlspecialchars($flvId); ?>"
-              data-region="<?php echo htmlspecialchars($flavorRegions[$flvId] ?? ''); ?>">
+          <tr data-id="<?php echo htmlspecialchars($flvId); ?>">
             <td><?php echo htmlspecialchars($flvId); ?></td>
             <td><input type="text" class="form-control input-sm flv-name"
                  value="<?php echo htmlspecialchars($displayName); ?>"></td>
-            <td><?php echo htmlspecialchars($flavorRegions[$flvId] ?? '—'); ?></td>
             <td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price"
                  value="<?php echo htmlspecialchars($flavorPrices[$flvId] ?? '0'); ?>"></td>
             <td><button class="btn btn-xs btn-danger btn-remove-flavor">Remove</button></td>
@@ -1651,54 +1595,23 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
 
-    var loadedFlavorNames   = {};
-    var loadedFlavorRegions = {};
-
-    // Populate the region selector on page load
-    $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, null, 'json')
-      .done(function(resp) {
-        if (resp && resp.regions && resp.regions.length) {
-          var sel = $('#flv-region-select').empty().append('<option value="">(all regions)</option>');
-          $.each(resp.regions, function(i, r) {
-            sel.append('<option value="' + $('<span>').text(r.slug).html() + '">'
-              + $('<span>').text(r.name + ' (' + r.slug + ')').html() + '</option>');
-          });
-        } else {
-          $('#flv-region-select').empty().append('<option value="">(no regions found – enter manually)</option>');
-        }
-      });
+    var loadedFlavorNames = {};
 
     $('#btn-load-flavors').on('click', function() {
-      var region = $('#flv-region-select').val();
       $('#flavors-loading').show();
       $('#flavors-error').hide();
-      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId, region: region }, function(resp) {
+      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId }, function(resp) {
         $('#flavors-loading').hide();
         if (!resp.success) {
           $('#flavors-error').text(resp.error || 'Failed to load flavors.').show();
           return;
         }
-        loadedFlavorNames   = {};
-        loadedFlavorRegions = {};
-        var fetchedRegion = resp.region || region || '(All)';
+        loadedFlavorNames = {};
         $.each(resp.flavors, function(i, flv) {
-          loadedFlavorNames[flv.id]   = flv.name;
-          loadedFlavorRegions[flv.id] = fetchedRegion;
+          loadedFlavorNames[flv.id] = flv.name;
         });
 
-        if (!region) {
-          $('#flavors-error')
-            .removeClass('alert-danger')
-            .addClass('alert-info')
-            .html('<i class="fa fa-info-circle"></i> Loaded <strong>' + resp.flavors.length +
-              '</strong> flavors (all regions combined). Select a specific region to see the ' +
-              'exact flavors and pricing for that region.')
-            .show();
-        } else {
-          $('#flavors-error').hide().removeClass('alert-info').addClass('alert-danger');
-        }
-
-        renderFlavorsTable(resp.flavors, fetchedRegion);
+        renderFlavorsTable(resp.flavors);
       }, 'json').fail(function() {
         $('#flavors-loading').hide();
         $('#flavors-error').text('Request failed. Check server connectivity.').show();
@@ -1710,28 +1623,24 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       return (s && s !== id) ? s : (loadedFlavorNames[id] || id);
     }
 
-    function renderFlavorsTable(flavors, regionLabel) {
-      var savedFlavors  = <?php echo json_encode((array)$savedFlavors); ?>;
-      var flavorNames   = <?php echo json_encode((object)($flavorNames  ?: new stdClass())); ?>;
-      var flavorRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
-      var flavorPrices  = <?php echo json_encode((object)($flavorPrices  ?: new stdClass())); ?>;
-      regionLabel = regionLabel || '(All)';
+    function renderFlavorsTable(flavors) {
+      var savedFlavors = <?php echo json_encode((array)$savedFlavors); ?>;
+      var flavorNames  = <?php echo json_encode((object)($flavorNames  ?: new stdClass())); ?>;
+      var flavorPrices = <?php echo json_encode((object)($flavorPrices  ?: new stdClass())); ?>;
 
       var html = '<table class="table table-bordered cmp-resource-table"><thead><tr>' +
         '<th><input type="checkbox" id="check-all-flavors"> All</th>' +
-        '<th>Flavor ID</th><th>Name</th><th>vCPU</th><th>RAM (GB)</th><th>Region</th>' +
+        '<th>Flavor ID</th><th>Name</th><th>vCPU</th><th>RAM (GB)</th>' +
         '</tr></thead><tbody>';
 
       $.each(flavors, function(i, flv) {
         var checked = (savedFlavors.indexOf(flv.id) !== -1) ? 'checked' : '';
-        var rowRegion = loadedFlavorRegions[flv.id] || regionLabel;
         html += '<tr data-id="' + $('<span>').text(flv.id).html() + '">' +
           '<td><input type="checkbox" class="flv-check" value="' + $('<span>').text(flv.id).html() + '" ' + checked + '></td>' +
           '<td>' + $('<span>').text(flv.id).html() + '</td>' +
           '<td>' + $('<span>').text(flv.name).html() + '</td>' +
           '<td>' + (parseInt(flv.vcpu) || 0) + '</td>' +
           '<td>' + (parseFloat(flv.memory_gb) || 0) + '</td>' +
-          '<td>' + $('<span>').text(rowRegion).html() + '</td>' +
           '</tr>';
       });
 
@@ -1745,13 +1654,11 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       });
 
       $('#btn-apply-flavor-selection').on('click', function() {
-        var selected = [], regionsByRow = {};
+        var selected = [];
         $('#flavors-container tbody tr').each(function() {
           var row = $(this), id = row.data('id');
           if (row.find('.flv-check').is(':checked')) {
             selected.push(id);
-            var cells = row.find('td');
-            regionsByRow[id] = cells.eq(5).text().trim(); // Region is 6th cell (index 5)
           }
         });
 
@@ -1759,24 +1666,20 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
           if (resp.success) {
             var tbody = $('#flavors-config-table tbody');
             tbody.empty();
-            var namesToPersist = {}, regionsToPersist = {};
+            var namesToPersist = {};
             $.each(selected, function(i, flvId) {
-              var name   = bestFlvName(flavorNames, flvId);
-              var region = regionsByRow[flvId] || flavorRegions[flvId] || loadedFlavorRegions[flvId] || '';
-              var price  = flavorPrices[flvId] || '0';
-              namesToPersist[flvId]   = name;
-              regionsToPersist[flvId] = region;
-              tbody.append('<tr data-id="' + $('<span>').text(flvId).html() + '" data-region="' + $('<span>').text(region).html() + '">' +
+              var name  = bestFlvName(flavorNames, flvId);
+              var price = flavorPrices[flvId] || '0';
+              namesToPersist[flvId] = name;
+              tbody.append('<tr data-id="' + $('<span>').text(flvId).html() + '">' +
                 '<td>' + $('<span>').text(flvId).html() + '</td>' +
                 '<td><input type="text" class="form-control input-sm flv-name" value="' + $('<span>').text(name).html() + '"></td>' +
-                '<td>' + $('<span>').text(region || '(All)').html() + '</td>' +
                 '<td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" value="' + $('<span>').text(price).html() + '"></td>' +
                 '<td><button class="btn btn-xs btn-danger btn-remove-flavor">Remove</button></td>' +
                 '</tr>');
             });
             $('#flavors-saved-section').show();
-            $.post(moduleUrl, { action: 'save_flavor_names',   server_id: serverId, names:   namesToPersist   }, null, 'json');
-            $.post(moduleUrl, { action: 'save_flavor_regions', server_id: serverId, regions: regionsToPersist }, null, 'json');
+            $.post(moduleUrl, { action: 'save_flavor_names', server_id: serverId, names: namesToPersist }, null, 'json');
           }
         }, 'json');
       });
@@ -1787,20 +1690,18 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     });
 
     $('#btn-save-flavor-config').on('click', function() {
-      var names = {}, regions = {}, prices = {}, ids = [];
+      var names = {}, prices = {}, ids = [];
       $('#flavors-config-table tbody tr').each(function() {
         var id = $(this).data('id');
         ids.push(id);
-        names[id]   = $(this).find('.flv-name').val();
-        regions[id] = $(this).data('region') || '';   // read from data attr, not an input
-        prices[id]  = $(this).find('.flv-price').val();
+        names[id]  = $(this).find('.flv-name').val();
+        prices[id] = $(this).find('.flv-price').val();
       });
 
       $.when(
-        $.post(moduleUrl, { action: 'save_flavor_names',   server_id: serverId, names:   names   }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_flavor_regions', server_id: serverId, regions: regions }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_flavor_prices',  server_id: serverId, prices:  prices  }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_flavors',        server_id: serverId, selected_flavors: ids }, null, 'json')
+        $.post(moduleUrl, { action: 'save_flavor_names',  server_id: serverId, names:  names  }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_flavor_prices', server_id: serverId, prices: prices }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_flavors',       server_id: serverId, selected_flavors: ids }, null, 'json')
       ).done(function() {
         $('#flavors-save-msg').text('Flavor configuration saved successfully.').addClass('alert alert-success').show();
         setTimeout(function() { $('#flavors-save-msg').hide(); }, 3000);
@@ -2388,167 +2289,338 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
  */
 function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
 {
+  $currentVersion = CLOUDPE_CMP_MODULE_VERSION;
   ?>
-  <div class="cmp-section">
-    <h4>Module Version</h4>
-    <table class="table table-bordered" style="max-width:500px;">
-      <tr><th style="width:160px;">Installed Version</th><td><strong><?php echo CLOUDPE_CMP_MODULE_VERSION; ?></strong></td></tr>
-      <tr>
-        <th>Latest Version</th>
-        <td id="latest-version"><em class="text-muted">Click "Check for Updates"</em></td>
-      </tr>
-    </table>
+  <div class="panel panel-default">
+    <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
+    <div class="panel-body">
 
-    <button class="btn btn-default" id="btn-check-update">
-      <i class="fa fa-search"></i> Check for Updates
-    </button>
-    <div id="update-spinner" class="cmp-spinner" style="margin-left:10px; display:inline-block;">
-      <i class="fa fa-spinner fa-spin"></i>
+      <div class="row">
+        <div class="col-md-6">
+          <h4>Current Installation</h4>
+          <table class="table table-bordered">
+            <tr><td><strong>Module Version</strong></td><td><span class="label label-primary"><?php echo htmlspecialchars($currentVersion); ?></span></td></tr>
+            <tr><td><strong>PHP Version</strong></td><td><?php echo PHP_VERSION; ?></td></tr>
+            <tr><td><strong>WHMCS Version</strong></td><td><?php echo htmlspecialchars($GLOBALS['CONFIG']['Version'] ?? 'Unknown'); ?></td></tr>
+          </table>
+        </div>
+        <div class="col-md-6">
+          <h4>Update Status</h4>
+          <div id="update-status">
+            <p><i class="fa fa-spinner fa-spin"></i> Checking for updates...</p>
+          </div>
+        </div>
+      </div>
+
+      <hr>
+
+      <div id="update-actions" style="display:none;">
+        <h4>Available Update</h4>
+        <div id="update-info"></div>
+        <button type="button" class="btn btn-success btn-lg" id="btn-install-update" style="display:none;">
+          <i class="fa fa-download"></i> Download &amp; Install Update
+        </button>
+        <div id="update-progress" style="display:none; margin-top:15px;">
+          <div class="progress"><div class="progress-bar progress-bar-striped active" style="width:100%">Installing...</div></div>
+        </div>
+      </div>
+
+      <div id="update-result" style="display:none; margin-top:15px;"></div>
+
     </div>
-    <div id="update-info" class="cmp-alert" style="margin-top:15px;"></div>
   </div>
 
-  <div class="cmp-section" id="install-update-section" style="display:none;">
-    <h4>Install Update</h4>
-    <p>A newer version is available. Installing will overwrite the current module files.</p>
-    <button class="btn btn-warning" id="btn-install-update">
-      <i class="fa fa-download"></i> Install Update
-    </button>
-    <div id="install-msg" class="cmp-alert" style="margin-top:10px;"></div>
-  </div>
-
-  <div class="cmp-section">
-    <h4>All Releases
-      <button class="btn btn-xs btn-default pull-right" id="btn-load-releases">
-        <i class="fa fa-refresh"></i> Load Releases
-      </button>
-    </h4>
-    <div id="releases-spinner" class="cmp-spinner"><i class="fa fa-spinner fa-spin"></i> Loading releases...</div>
-    <div id="releases-container">
-      <p class="text-muted">Click <strong>Load Releases</strong> to fetch the release history from GitHub.</p>
+  <div class="panel panel-default">
+    <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-history"></i> All Releases</h3></div>
+    <div class="panel-body">
+      <p class="text-muted">View all available releases with release notes. You can install any version including downgrades.</p>
+      <button class="btn btn-default" onclick="loadAllReleases()"><i class="fa fa-refresh"></i> Load Releases</button>
+      <div id="all-releases-container" style="margin-top:15px;"></div>
     </div>
   </div>
 
   <script>
-  (function() {
-    var moduleUrl    = '<?php echo $moduleUrl; ?>';
-    var downloadUrl  = '';
+  var cmpModuleUrl     = '<?php echo addslashes($moduleUrl); ?>';
+  var cmpCurrentVer    = '<?php echo addslashes($currentVersion); ?>';
+  var cmpDownloadUrl   = '';
 
-    $('#btn-check-update').on('click', function() {
-      $('#update-spinner').show();
-      $('#update-info').hide();
-      $.post(moduleUrl, { action: 'check_update' }, function(resp) {
-        $('#update-spinner').hide();
-        $('#latest-version').text(resp.latest || 'Unknown');
+  $(document).ready(function() {
+    checkForUpdates();
+    loadAllReleases();
+  });
 
-        if (resp.error) {
-          $('#update-info').text('Error: ' + resp.error).removeClass('alert-success alert-info').addClass('alert alert-danger').show();
-          return;
-        }
+  function checkForUpdates() {
+    $.ajax({
+      url: cmpModuleUrl,
+      type: 'POST',
+      data: { action: 'check_update' },
+      dataType: 'json',
+      success: function(data) {
+        if (data.success) {
+          if (data.update_available) {
+            $('#update-status').html(
+              '<div class="alert alert-warning">' +
+              '<i class="fa fa-exclamation-triangle"></i> ' +
+              '<strong>Update Available!</strong> Version ' + escapeHtml(data.latest_version) + ' is available.' +
+              '</div>'
+            );
 
-        if (resp.update_available) {
-          downloadUrl = resp.download_url || '';
-          var changelogHtml = '';
-          if (resp.changelog && resp.changelog.length) {
-            changelogHtml = '<ul>' + $.map(resp.changelog, function(c) {
-              return '<li>' + $('<span>').text(c).html() + '</li>';
-            }).join('') + '</ul>';
+            var info = '<table class="table table-bordered">';
+            info += '<tr><td><strong>Latest Version</strong></td><td><span class="label label-success">' + escapeHtml(data.latest_version) + '</span></td></tr>';
+            info += '<tr><td><strong>Your Version</strong></td><td><span class="label label-default">' + escapeHtml(data.current_version) + '</span></td></tr>';
+            info += '<tr><td><strong>Released</strong></td><td>' + escapeHtml(data.released || '') + '</td></tr>';
+            info += '</table>';
+
+            if (data.changelog && data.changelog.length > 0) {
+              info += '<h5>Changelog:</h5><ul>';
+              data.changelog.forEach(function(item) {
+                info += '<li>' + escapeHtml(item) + '</li>';
+              });
+              info += '</ul>';
+            }
+
+            $('#update-info').html(info);
+            $('#update-actions').show();
+            cmpDownloadUrl = data.download_url || '';
+            if (cmpDownloadUrl) {
+              $('#btn-install-update').show();
+            }
+          } else {
+            $('#update-status').html(
+              '<div class="alert alert-success">' +
+              '<i class="fa fa-check-circle"></i> ' +
+              '<strong>Up to date!</strong> You are running the latest version (' + escapeHtml(data.current_version) + ').' +
+              '</div>'
+            );
           }
-          $('#update-info')
-            .html('<strong>Update available: v' + $('<span>').text(resp.latest).html() + '</strong>' + changelogHtml)
-            .removeClass('alert-success alert-danger').addClass('alert alert-warning').show();
-          $('#install-update-section').show();
         } else {
-          $('#update-info')
-            .text('You are running the latest version (' + resp.current + ').')
-            .removeClass('alert-warning alert-danger').addClass('alert alert-success').show();
-          $('#install-update-section').hide();
+          $('#update-status').html(
+            '<div class="alert alert-danger">' +
+            '<i class="fa fa-times-circle"></i> ' +
+            'Failed to check for updates: ' + escapeHtml(data.error || 'Unknown error') +
+            '</div>' +
+            '<button class="btn btn-default" onclick="checkForUpdates()">Retry</button>'
+          );
         }
-      }, 'json').fail(function() {
-        $('#update-spinner').hide();
-        $('#update-info').text('Request failed.').addClass('alert alert-danger').show();
-      });
+      },
+      error: function() {
+        $('#update-status').html(
+          '<div class="alert alert-danger">' +
+          '<i class="fa fa-times-circle"></i> Failed to connect to update server.' +
+          '</div>' +
+          '<button class="btn btn-default" onclick="checkForUpdates()">Retry</button>'
+        );
+      }
     });
+  }
 
-    $('#btn-install-update').on('click', function() {
-      if (!downloadUrl) {
-        alert('No download URL found. Please check for updates first.');
-        return;
-      }
-      if (!confirm('Install the update now? The current module files will be overwritten.')) {
-        return;
-      }
-      $(this).prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Installing...');
-      $.post(moduleUrl, { action: 'install_update', download_url: downloadUrl }, function(resp) {
-        $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Install Update');
-        var msg = $('#install-msg');
-        msg.removeClass('alert-success alert-danger').empty();
-        // Render per-file diagnostics so silent copy/opcache issues
-        // surface directly in the UI.
+  $('#btn-install-update').on('click', function() {
+    if (!cmpDownloadUrl) {
+      alert('No download URL found. Please check for updates first.');
+      return;
+    }
+    if (!confirm('Install the update now? A backup will be created. Continue?')) {
+      return;
+    }
+    $('#btn-install-update').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Installing...');
+    $('#update-progress').show();
+
+    $.ajax({
+      url: cmpModuleUrl,
+      type: 'POST',
+      data: { action: 'install_update', download_url: cmpDownloadUrl },
+      dataType: 'json',
+      success: function(resp) {
+        $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Download &amp; Install Update');
+        $('#update-progress').hide();
+
+        // Include per-file diagnostic stats in the result message
         var detail = '';
         if (resp.stats) {
           detail = ' (' + resp.stats.files_written + ' written, '
             + resp.stats.files_failed + ' failed, '
             + resp.stats.opcache_invalidated + ' opcache cleared)';
           if (resp.stats.failures && resp.stats.failures.length) {
-            detail += '<br><small>' + resp.stats.failures.slice(0, 5).map(function(f){
-              return $('<span>').text(f).html();
+            detail += '<br><small>' + resp.stats.failures.slice(0, 5).map(function(f) {
+              return escapeHtml(f);
             }).join('<br>') + '</small>';
           }
+          if (resp.stats.backup_path) {
+            detail += '<br><small class="text-muted">Backup: ' + escapeHtml(resp.stats.backup_path) + '</small>';
+          }
         }
-        if (resp.success) {
-          msg.html($('<span>').text(resp.message).html() + detail)
-             .addClass('alert alert-success').show();
+
+        var resultHtml = resp.success
+          ? '<div class="alert alert-success"><i class="fa fa-check"></i> ' + escapeHtml(resp.message || 'Update installed.') + detail + ' <strong>Please refresh the page.</strong></div>'
+          : '<div class="alert alert-danger"><i class="fa fa-times"></i> ' + escapeHtml(resp.message || 'Update failed.') + detail + '</div>';
+
+        if (!resp.success) {
+          $('#btn-install-update').show();
+        }
+        $('#update-result').html(resultHtml).show();
+      },
+      error: function() {
+        $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Download &amp; Install Update');
+        $('#update-progress').hide();
+        $('#update-result').html('<div class="alert alert-danger">Request failed during install.</div>').show();
+      }
+    });
+  });
+
+  function loadAllReleases() {
+    $('#all-releases-container').html('<p><i class="fa fa-spinner fa-spin"></i> Loading releases from GitHub...</p>');
+
+    $.ajax({
+      url: cmpModuleUrl,
+      type: 'POST',
+      data: { action: 'get_releases' },
+      dataType: 'json',
+      success: function(data) {
+        if (data.success && Array.isArray(data.releases) && data.releases.length) {
+          renderAllReleases(data.releases);
         } else {
-          msg.html($('<span>').text(resp.message || 'Update failed.').html() + detail)
-             .addClass('alert alert-danger').show();
+          $('#all-releases-container').html(
+            data.success
+              ? '<p class="text-muted">No releases found.</p>'
+              : '<div class="alert alert-danger"><i class="fa fa-times-circle"></i> Failed to load releases: ' + escapeHtml(data.error || '') + '</div>'
+          );
         }
-      }, 'json').fail(function() {
-        $('#btn-install-update').prop('disabled', false).html('<i class="fa fa-download"></i> Install Update');
-        $('#install-msg').text('Request failed during install.').addClass('alert alert-danger').show();
-      });
+      },
+      error: function() {
+        $('#all-releases-container').html('<div class="alert alert-danger"><i class="fa fa-times-circle"></i> Failed to connect to GitHub.</div>');
+      }
+    });
+  }
+
+  function renderAllReleases(releases) {
+    var html = '<div class="panel-group" id="releases-accordion">';
+
+    releases.forEach(function(release, index) {
+      var ver        = release.version || '';
+      var isInstalled = (ver === cmpCurrentVer);
+      var isNewer     = compareVersions(ver, cmpCurrentVer) > 0;
+      var isOlder     = compareVersions(ver, cmpCurrentVer) < 0;
+
+      var versionBadge = '';
+      if (isInstalled)      versionBadge = ' <span class="label label-success">Installed</span>';
+      else if (isNewer)     versionBadge = ' <span class="label label-warning">Newer</span>';
+      else if (isOlder)     versionBadge = ' <span class="label label-default">Older</span>';
+      if (release.prerelease) versionBadge += ' <span class="label label-info">Pre-release</span>';
+
+      var panelClass = isInstalled ? 'panel-success' : (isNewer ? 'panel-warning' : 'panel-default');
+
+      html += '<div class="panel ' + panelClass + '">';
+      html += '<div class="panel-heading" style="cursor:pointer;" data-toggle="collapse" data-target="#release-' + index + '">';
+      html += '<h4 class="panel-title">';
+      html += '<i class="fa fa-tag"></i> v' + escapeHtml(ver) + versionBadge;
+      html += '<span class="pull-right text-muted" style="font-size:12px; font-weight:normal;">' + escapeHtml(release.published_at || '') + '</span>';
+      html += '</h4></div>';
+
+      html += '<div id="release-' + index + '" class="panel-collapse collapse' + (index === 0 ? ' in' : '') + '">';
+      html += '<div class="panel-body">';
+
+      if (release.name && release.name !== release.tag) {
+        html += '<h5>' + escapeHtml(release.name) + '</h5>';
+      }
+
+      if (release.body) {
+        html += '<div class="well well-sm" style="white-space:pre-wrap; word-break:break-word; overflow-wrap:break-word; font-family:inherit; margin-bottom:10px;">'
+          + formatReleaseNotes(release.body) + '</div>';
+      } else {
+        html += '<p class="text-muted">No release notes available.</p>';
+      }
+
+      html += '<div>';
+      if (!isInstalled && release.download_url) {
+        var btnClass = isNewer ? 'btn-success' : 'btn-warning';
+        var btnText  = isNewer ? 'Upgrade to v' + escapeHtml(ver) : 'Downgrade to v' + escapeHtml(ver);
+        html += '<button class="btn ' + btnClass + '" onclick="installVersion(\'' + escapeHtml(release.download_url).replace(/'/g, "\\'") + '\', \'' + escapeHtml(ver).replace(/'/g, "\\'") + '\')">'
+          + '<i class="fa fa-download"></i> ' + btnText + '</button> ';
+      } else if (isInstalled) {
+        html += '<button class="btn btn-default" disabled><i class="fa fa-check"></i> Currently Installed</button> ';
+      } else {
+        html += '<button class="btn btn-default" disabled><i class="fa fa-ban"></i> No Download Available</button> ';
+      }
+      html += '<a href="' + escapeHtml(release.html_url || '#') + '" target="_blank" class="btn btn-default"><i class="fa fa-external-link"></i> View on GitHub</a>';
+      html += '</div>';
+
+      html += '</div></div></div>';
     });
 
-    $('#btn-load-releases').on('click', function() {
-      $('#releases-spinner').show();
-      $.post(moduleUrl, { action: 'get_releases' }, function(resp) {
-        $('#releases-spinner').hide();
-        if (!resp.success || !resp.releases.length) {
-          $('#releases-container').html('<p class="text-muted">No releases found.</p>');
-          return;
-        }
-        var html = '';
-        $.each(resp.releases, function(i, release) {
-          var isLatest = (i === 0);
-          var tag      = $('<span>').text(release.tag_name || '').html();
-          var name     = $('<span>').text(release.name || release.tag_name || '').html();
-          var date     = release.published_at ? release.published_at.substring(0, 10) : '';
-          var body     = $('<span>').text(release.body || '').html().replace(/\n/g, '<br>');
-          var dlUrl    = '';
-          if (release.assets && release.assets.length) {
-            dlUrl = release.assets[0].browser_download_url || '';
-          } else {
-            dlUrl = release.zipball_url || '';
-          }
+    html += '</div>';
+    $('#all-releases-container').html(html);
+  }
 
-          html += '<div class="cmp-release-item">';
-          html += '<h5>' + name + ' <small style="color:#888;">' + date + '</small>';
-          if (isLatest) html += ' <span class="cmp-badge-new">Latest</span>';
-          html += '</h5>';
-          if (body) html += '<p style="font-size:13px; color:#555; white-space:pre-wrap;">' + body + '</p>';
-          if (dlUrl) {
-            html += '<a href="' + $('<span>').text(dlUrl).html() + '" class="btn btn-xs btn-default" target="_blank">' +
-              '<i class="fa fa-download"></i> Download ' + tag + '</a>';
-          }
-          html += '</div>';
-        });
-        $('#releases-container').html(html);
-      }, 'json').fail(function() {
-        $('#releases-spinner').hide();
-        $('#releases-container').html('<p class="text-danger">Failed to load releases.</p>');
-      });
+  function installVersion(url, version) {
+    var action = compareVersions(version, cmpCurrentVer) > 0 ? 'upgrade to' : 'downgrade to';
+    if (!confirm('This will ' + action + ' version ' + version + '. A backup will be created. Continue?')) {
+      return;
+    }
+    $('#all-releases-container').prepend(
+      '<div id="install-progress-inline" class="alert alert-info">' +
+      '<i class="fa fa-spinner fa-spin"></i> Installing v' + escapeHtml(version) + '... Please wait.' +
+      '</div>'
+    );
+    $.ajax({
+      url: cmpModuleUrl,
+      type: 'POST',
+      data: { action: 'install_update', download_url: url },
+      dataType: 'json',
+      success: function(resp) {
+        $('#install-progress-inline').remove();
+        var detail = '';
+        if (resp.stats) {
+          detail = ' (' + resp.stats.files_written + ' written, ' + resp.stats.files_failed + ' failed, ' + resp.stats.opcache_invalidated + ' opcache cleared)';
+        }
+        var cls = resp.success ? 'alert-success' : 'alert-danger';
+        var ico = resp.success ? 'fa-check' : 'fa-times';
+        $('#all-releases-container').prepend(
+          '<div class="alert ' + cls + '"><i class="fa ' + ico + '"></i> ' +
+          escapeHtml(resp.message || (resp.success ? 'Installed.' : 'Failed.')) + detail +
+          (resp.success ? ' <strong>Please refresh the page.</strong>' : '') +
+          '</div>'
+        );
+        if (resp.success) loadAllReleases();
+      },
+      error: function() {
+        $('#install-progress-inline').remove();
+        $('#all-releases-container').prepend('<div class="alert alert-danger">Request failed during install.</div>');
+      }
     });
-  }());
+  }
+
+  function compareVersions(v1, v2) {
+    // Strip pre-release suffix for numeric comparison
+    var clean = function(v) { return (v || '').replace(/-.*$/, ''); };
+    var parts1 = clean(v1).split('.').map(Number);
+    var parts2 = clean(v2).split('.').map(Number);
+    for (var i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+      var p1 = parts1[i] || 0, p2 = parts2[i] || 0;
+      if (p1 > p2) return 1;
+      if (p1 < p2) return -1;
+    }
+    // If versions equal numerically, pre-release is older
+    var pre1 = v1.indexOf('-') > -1, pre2 = v2.indexOf('-') > -1;
+    if (!pre1 && pre2) return 1;
+    if (pre1 && !pre2) return -1;
+    return 0;
+  }
+
+  function escapeHtml(text) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(text || ''));
+    return d.innerHTML;
+  }
+
+  function formatReleaseNotes(text) {
+    var escaped = escapeHtml(text);
+    escaped = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    escaped = escaped.replace(/^### (.+)$/gm, '<h5 style="margin:8px 0 4px;">$1</h5>');
+    escaped = escaped.replace(/^## (.+)$/gm,  '<h4 style="margin:10px 0 5px;">$1</h4>');
+    escaped = escaped.replace(/^- (.+)$/gm,   '<li>$1</li>');
+    escaped = escaped.replace(/`([^`]+)`/g,   '<code>$1</code>');
+    return escaped;
+  }
   </script>
   <?php
 }
