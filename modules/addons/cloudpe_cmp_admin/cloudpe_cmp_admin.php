@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.4');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.5');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -1305,6 +1305,12 @@ function cloudpe_cmp_admin_output(array $vars): void
         echo json_encode(['success' => true, 'message' => 'Project display names saved.']);
         exit;
 
+      case 'save_project_regions':
+        $regions = $_POST['regions'] ?? [];
+        cloudpe_cmp_admin_save_setting($serverId, 'project_regions', $regions);
+        echo json_encode(['success' => true]);
+        exit;
+
       case 'save_security_groups':
         $selectedSgs = $_POST['selected_security_groups'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'selected_security_groups', $selectedSgs);
@@ -1663,6 +1669,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
+    <div id="images-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="images-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -1705,8 +1712,6 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     <?php if (empty($savedImages)): ?>
     <p class="text-muted">No images configured yet. Click <strong>Load from API</strong> to fetch available images from all regions.</p>
     <?php endif; ?>
-
-    <div id="images-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
   <script>
@@ -1718,6 +1723,18 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var savedNames      = <?php echo json_encode((object)($imageNames ?: new stdClass())); ?>;
     var savedPrices     = <?php echo json_encode((object)($imagePrices ?: new stdClass())); ?>;
     var savedImgRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
+    var regionNames     = {}; // id -> display name, loaded on init
+
+    // Background: load regions to resolve IDs to display names for saved rows
+    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
+      if (resp.success && resp.regions) {
+        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
+        $('#images-table tbody tr').each(function() {
+          var rId = $(this).attr('data-region') || '';
+          if (rId && regionNames[rId]) $(this).find('.img-region').text(regionNames[rId]);
+        });
+      }
+    }, 'json');
 
     function reNumber() {
       $('#images-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -1836,7 +1853,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         $.post(moduleUrl, { action: 'save_image_names',   server_id: serverId, names: names         }, null, 'json'),
         $.post(moduleUrl, { action: 'save_image_prices',  server_id: serverId, prices: prices       }, null, 'json'),
         $.post(moduleUrl, { action: 'save_image_regions', server_id: serverId, regions: regions     }, null, 'json')
-      ).done(function() {
+      ).always(function() {
         savedImageIds = ids;
         $('#images-save-msg').text('Image configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
         setTimeout(function() { $('#images-save-msg').hide(); }, 3000);
@@ -1874,6 +1891,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
+    <div id="flavors-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="flavors-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -1924,8 +1942,6 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     <?php if (empty($savedFlavors)): ?>
     <p class="text-muted">No flavors configured yet. Click <strong>Load from API</strong> to fetch available flavors from all regions.</p>
     <?php endif; ?>
-
-    <div id="flavors-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
   <script>
@@ -1939,6 +1955,20 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var savedFlvRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
     var savedFlvGroups  = <?php echo json_encode((object)($flavorGroups ?: new stdClass())); ?>;
     var flavorGroupMap  = {}; // accumulated across all region loads
+    var regionNames     = {}; // id -> display name, loaded on init
+
+    // Background: load regions to resolve IDs to display names for saved rows
+    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
+      if (resp.success && resp.regions) {
+        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
+        $('#flavors-table tbody tr').each(function() {
+          var rId = $(this).attr('data-region') || '';
+          if (rId && regionNames[rId]) $(this).find('.flv-region').text(regionNames[rId]);
+          var g = $(this).attr('data-group') || '';
+          if (g && g !== '—') $(this).find('.flv-group').text(g);
+        });
+      }
+    }, 'json');
 
     function reNumber() {
       $('#flavors-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -1950,7 +1980,21 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
 
       $.each(items, function(i, flv) {
         var groupName = flavorGroupMap[flv.id] || flv.flavor_group_name || flv.flavor_group_slug || '—';
-        if (existingIds.indexOf(String(flv.id)) !== -1) return; // skip duplicates
+        if (existingIds.indexOf(String(flv.id)) !== -1) {
+          // Update vCPU, RAM, region, group for existing (saved) rows
+          var er = $('#flavors-table tbody tr[data-id="' + flv.id + '"]');
+          if (flv.vcpu    !== undefined) er.find('.flv-vcpu').text(parseInt(flv.vcpu) || 0);
+          if (flv.memory_gb !== undefined) er.find('.flv-ram').text(parseFloat(flv.memory_gb) || 0);
+          if (regionLabel || regionId) {
+            er.find('.flv-region').text(regionLabel || regionId);
+            er.attr('data-region', regionId || '');
+          }
+          if (groupName !== '—') {
+            er.find('.flv-group').text(groupName);
+            er.attr('data-group', groupName);
+          }
+          return; // don't add duplicate row
+        }
         var isSaved = savedFlavorIds.indexOf(flv.id) !== -1;
         var row = $('<tr>').attr('data-id', flv.id).attr('data-region', regionId || '').attr('data-group', groupName).attr('data-saved', '0');
         row.html(
@@ -2082,7 +2126,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         $.post(moduleUrl, { action: 'save_flavor_prices',  server_id: serverId, prices: prices        }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_regions', server_id: serverId, regions: regions      }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_groups',  server_id: serverId, flavor_groups: groups }, null, 'json')
-      ).done(function() {
+      ).always(function() {
         savedFlavorIds = ids;
         $('#flavors-save-msg').text('Flavor configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
         setTimeout(function() { $('#flavors-save-msg').hide(); }, 3000);
@@ -2199,8 +2243,9 @@ function cloudpe_cmp_admin_render_disks(int $serverId, string $moduleUrl): void
  */
 function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): void
 {
-  $savedProjects = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
-  $projectNames  = (array)cloudpe_cmp_admin_get_setting($serverId, 'project_names', []);
+  $savedProjects  = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
+  $projectNames   = (array)cloudpe_cmp_admin_get_setting($serverId, 'project_names', []);
+  $projectRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'project_regions', []);
   ?>
   <div class="cmp-section">
     <h4>Projects</h4>
@@ -2215,6 +2260,7 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
+    <div id="projects-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="projects-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -2224,6 +2270,7 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-projects" title="Select/deselect all"></th>
           <th>Name</th>
+          <th>Region</th>
           <th>Project ID</th>
           <th>Display Name</th>
         </tr>
@@ -2231,11 +2278,13 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
       <tbody>
         <?php foreach ($savedProjects as $i => $projId):
           $displayName = $projectNames[$projId] ?? $projId;
+          $projRegion  = $projectRegions[$projId] ?? '—';
         ?>
-        <tr data-id="<?php echo htmlspecialchars($projId); ?>">
+        <tr data-id="<?php echo htmlspecialchars($projId); ?>" data-region="<?php echo htmlspecialchars($projectRegions[$projId] ?? ''); ?>">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="proj-check" checked></td>
           <td class="proj-api-name"><?php echo htmlspecialchars($displayName); ?></td>
+          <td class="proj-region text-muted" style="white-space:nowrap;"><?php echo htmlspecialchars($projRegion); ?></td>
           <td><small class="text-muted"><?php echo htmlspecialchars($projId); ?></small></td>
           <td><input type="text" class="form-control input-sm proj-name"
                value="<?php echo htmlspecialchars($displayName); ?>"></td>
@@ -2248,16 +2297,27 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     <?php if (empty($savedProjects)): ?>
     <p class="text-muted">No projects configured yet. Click <strong>Load from API</strong> or enter a Project ID manually in the server Access Hash field.</p>
     <?php endif; ?>
-
-    <div id="projects-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
   <script>
   (function() {
-    var serverId     = <?php echo $serverId; ?>;
-    var moduleUrl    = '<?php echo $moduleUrl; ?>';
-    var savedProjIds = <?php echo json_encode(array_values($savedProjects)); ?>;
-    var savedNames   = <?php echo json_encode((object)($projectNames ?: new stdClass())); ?>;
+    var serverId        = <?php echo $serverId; ?>;
+    var moduleUrl       = '<?php echo $moduleUrl; ?>';
+    var savedProjIds    = <?php echo json_encode(array_values($savedProjects)); ?>;
+    var savedNames      = <?php echo json_encode((object)($projectNames ?: new stdClass())); ?>;
+    var savedProjRegions = <?php echo json_encode((object)($projectRegions ?: new stdClass())); ?>;
+    var regionNames     = {}; // id -> display name
+
+    // Background: load regions to resolve saved region IDs to names
+    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
+      if (resp.success && resp.regions) {
+        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
+        $('#projects-table tbody tr').each(function() {
+          var rId = $(this).attr('data-region') || '';
+          if (rId && regionNames[rId]) $(this).find('.proj-region').text(regionNames[rId]);
+        });
+      }
+    }, 'json');
 
     function reNumber() {
       $('#projects-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -2293,27 +2353,26 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
         var existingIds = [];
         $('#projects-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
-        var added = 0;
         $.each(resp.projects, function(i, p) {
           if (existingIds.indexOf(String(p.id)) !== -1) return;
-          var isSaved = savedProjIds.indexOf(p.id) !== -1;
-          var row = $('<tr>').attr('data-id', p.id);
+          var isSaved  = savedProjIds.indexOf(p.id) !== -1;
+          var rId      = p.region_id || p.region || '';
+          var rLabel   = (rId && regionNames[rId]) ? regionNames[rId] : (rId || '—');
+          var row = $('<tr>').attr('data-id', p.id).attr('data-region', rId);
           row.html(
             '<td class="row-num"></td>' +
             '<td><input type="checkbox" class="proj-check"' + (isSaved ? ' checked' : '') + '></td>' +
             '<td class="proj-api-name">' + $('<span>').text(p.name).html() + '</td>' +
+            '<td class="proj-region text-muted" style="white-space:nowrap;">' + $('<span>').text(rLabel).html() + '</td>' +
             '<td><small class="text-muted">' + $('<span>').text(p.id).html() + '</small></td>' +
             '<td><input type="text" class="form-control input-sm proj-name" value="' +
               $('<span>').text(savedNames[p.id] || p.name).html() + '"></td>'
           );
           $('#projects-table tbody').append(row);
-          added++;
         });
         reNumber();
-        if (added === 0) {
-          $('#projects-error').text('No new projects found (all already listed).').show();
-        }
       }, 'json').fail(function() {
+        btn.prop('disabled', false);
         $('#projects-loading').hide();
         $('#projects-error').text('Request failed. Check server connectivity.').show();
       });
@@ -2339,20 +2398,23 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     });
 
     $('#btn-save-projects').on('click', function() {
-      var ids = [], names = {};
+      var ids = [], names = {}, regions = {};
       $('#projects-table tbody tr').each(function() {
         var row = $(this);
         if (row.find('.proj-check').is(':checked')) {
           var id = row.data('id');
           ids.push(id);
           names[id] = row.find('.proj-name').val();
+          var rId = row.attr('data-region') || '';
+          if (rId) regions[id] = rId;
         }
       });
 
       $.when(
-        $.post(moduleUrl, { action: 'save_projects',      server_id: serverId, selected_projects: ids }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_project_names', server_id: serverId, names: names           }, null, 'json')
-      ).done(function() {
+        $.post(moduleUrl, { action: 'save_projects',        server_id: serverId, selected_projects: ids }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_project_names',   server_id: serverId, names: names           }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_project_regions', server_id: serverId, regions: regions       }, null, 'json')
+      ).always(function() {
         savedProjIds = ids;
         $('#projects-save-msg').text('Project configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
         setTimeout(function() { $('#projects-save-msg').hide(); }, 3000);
@@ -2412,6 +2474,7 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
+    <div id="sgs-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="sgs-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -2447,8 +2510,6 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
     <?php if (empty($savedSgs)): ?>
     <p class="text-muted">No security groups configured yet. Click <strong>Load from API</strong> to fetch from the server's project.</p>
     <?php endif; ?>
-
-    <div id="sgs-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
   <script>
@@ -2564,7 +2625,7 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
       $.when(
         $.post(moduleUrl, { action: 'save_security_groups',      server_id: serverId, selected_security_groups: ids }, null, 'json'),
         $.post(moduleUrl, { action: 'save_security_group_names', server_id: serverId, names: names                  }, null, 'json')
-      ).done(function() {
+      ).always(function() {
         savedSgIds = ids;
         $('#sgs-save-msg').text('Security group configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
         setTimeout(function() { $('#sgs-save-msg').hide(); }, 3000);
@@ -2599,6 +2660,7 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
+    <div id="vtypes-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="vtypes-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -2632,8 +2694,6 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
     <?php if (empty($savedTypes)): ?>
     <p class="text-muted">No storage policies configured yet. Click <strong>Load from API</strong> to fetch available volume types from all regions.</p>
     <?php endif; ?>
-
-    <div id="vtypes-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
   <script>
@@ -2757,7 +2817,7 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
       $.when(
         $.post(moduleUrl, { action: 'save_volume_types',      server_id: serverId, selected_volume_types: ids }, null, 'json'),
         $.post(moduleUrl, { action: 'save_volume_type_names', server_id: serverId, names: names               }, null, 'json')
-      ).done(function() {
+      ).always(function() {
         savedVtIds = ids;
         $('#vtypes-save-msg').text('Storage policy configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
         setTimeout(function() { $('#vtypes-save-msg').hide(); }, 3000);

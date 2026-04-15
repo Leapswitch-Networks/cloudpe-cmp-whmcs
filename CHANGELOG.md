@@ -2,6 +2,14 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.5] - 2026-04-15
+
+### Fixed
+- **Save message not showing** — save confirmation now appears directly below the toolbar (above the table) and uses `.always()` so it shows even when individual sub-requests have minor issues.
+- **vCPU and RAM (GB) blank for saved flavors** — when "Load from API" is clicked, existing saved rows now get their vCPU and RAM cells updated from the API response (previously duplicate rows were skipped entirely).
+- **Projects — Region column missing** — Region column re-added to the Projects tab; region is stored per project and resolved to a display name on load.
+- **Region shows ID instead of name** — Images, Flavors, and Projects tabs now fire a background `load_regions` request on page init; saved rows with stored region IDs are updated to display the human-readable region name.
+
 ## [1.1.1-beta.4] - 2026-04-15
 
 ### Changed
