@@ -1,17 +1,15 @@
 {
-    "version": "1.1.1-beta.3",
+    "version": "1.1.1-beta.4",
     "released": "2026-04-15",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.3/cloudpe-cmp-whmcs-module-v1.1.1-beta.3.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.4/cloudpe-cmp-whmcs-module-v1.1.1-beta.4.zip",
     "changelog": [
-        "Region required for Images/Flavors loading — region selector mandatory, region column in tables",
-        "Flavors: flavor group fetched from /flavor-groups and shown in table + used as prefix in config group",
-        "Security Groups: project + region selectors; project dropdown from saved projects + manual input fallback",
-        "Storage Policies: region required by API — region selector added to Volume Types tab",
-        "Config Group: Region added as first option; Server Size uses grouped display names (Group: FlavourName)",
-        "Config Group listing: only shows groups linked to cloudpe_cmp products",
-        "Nameserver fix: convert ns prefix inputs to type=hidden (most reliable form submission approach)",
-        "API: listVolumeTypes(regionId), listFlavorGroups(regionId), listSecurityGroups(projectId, regionId)"
+        "Load from API fetches all regions automatically — no region dropdown required",
+        "Uncheck behavior fixed — unchecking a row only deselects it (row stays visible for re-selection)",
+        "Save button moved to top-right toolbar row alongside Load from API",
+        "Scrollable table with sticky header for large datasets",
+        "Search/filter input — checked items always visible regardless of filter",
+        "Security Groups: removed region dropdown, loads by project only"
     ]
 }

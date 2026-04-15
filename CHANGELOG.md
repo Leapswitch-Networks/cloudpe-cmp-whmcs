@@ -2,6 +2,17 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.4] - 2026-04-15
+
+### Changed
+- **Load from API now fetches all regions automatically** — region dropdown removed from Images, Flavors, Storage Policies, and Security Groups tabs. Clicking "Load from API" fetches regions first, then loads items per region in parallel and merges the results (deduplicating by ID).
+- **Uncheck behavior** — unchecking a row now only deselects the checkbox (with confirmation). The row stays in the table so it can be re-checked without reloading. Previously unchecking removed the row from the DOM.
+- **Save button** moved to top-right of the toolbar row (alongside Load from API), replacing the bottom-of-page position.
+- **Scrollable table with sticky header** — each resource table is wrapped in a scrollable container (`max-height: calc(100vh - 260px)`). The `<thead>` row uses `position: sticky; top: 0` so column headers remain visible when scrolling large datasets.
+- **Search/filter input** added between Load from API and Save buttons on all resource tabs (Images, Flavors, Projects, Security Groups, Storage Policies). Typing filters visible rows; checked (selected) rows are always shown regardless of the search term.
+- **Check-all header checkbox** now simply checks or unchecks all visible rows without a confirmation dialog (individual uncheck still confirms).
+- **Security Groups**: region dropdown removed; loads all security groups for the selected project in a single call.
+
 ## [1.1.1-beta.3] - 2026-04-15
 
 ### Added

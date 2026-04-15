@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.3');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.4');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -1434,6 +1434,14 @@ function cloudpe_cmp_admin_output(array $vars): void
     .cmp-spinner { display: none; }
     .cmp-alert { display: none; margin-top: 10px; }
     #cmp-server-selector { margin-bottom: 20px; }
+    /* Scrollable table with sticky header */
+    .cmp-table-wrap { max-height: calc(100vh - 260px); overflow-y: auto; border: 1px solid #ddd; border-radius: 3px; margin-bottom: 15px; }
+    .cmp-table-wrap > .table { margin-bottom: 0; border: none; }
+    .cmp-table-wrap thead th { position: sticky; top: 0; background: #f5f5f5; z-index: 2; box-shadow: 0 1px 0 #ddd; }
+    /* Resource tab toolbar */
+    .cmp-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    .cmp-toolbar .cmp-search { flex: 1; min-width: 140px; max-width: 280px; }
+    .cmp-toolbar .btn-save-right { margin-left: auto; }
   </style>
 
   <div class="cmp-tab-nav">
@@ -1645,18 +1653,19 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
   ?>
   <div class="cmp-section">
     <h4>Images</h4>
-    <div style="margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <label style="margin:0;"><strong>Region:</strong></label>
-      <select id="images-region-select" class="form-control" style="width:auto; min-width:160px;">
-        <option value="">All regions</option>
-      </select>
+    <div class="cmp-toolbar">
       <button class="btn btn-primary" id="btn-load-images">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="images-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span id="images-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="images-loading-text">Loading...</span></span>
+      <input type="text" id="images-search" class="form-control cmp-search" placeholder="Filter images...">
+      <button class="btn btn-success btn-save-right" id="btn-save-images">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
     </div>
     <div id="images-error" class="alert alert-danger" style="display:none;"></div>
 
+    <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="images-table">
       <thead>
         <tr>
@@ -1677,7 +1686,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
           $displayName = ($savedName !== '' && $savedName !== $imgId) ? $savedName : $imgId;
           $region      = $imageRegions[$imgId] ?? '—';
         ?>
-        <tr data-id="<?php echo htmlspecialchars($imgId); ?>" data-saved="1">
+        <tr data-id="<?php echo htmlspecialchars($imgId); ?>" data-region="<?php echo htmlspecialchars($imageRegions[$imgId] ?? ''); ?>" data-saved="1">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="img-check" checked></td>
           <td class="img-api-name"><?php echo htmlspecialchars($displayName); ?></td>
@@ -1691,14 +1700,12 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
 
     <?php if (empty($savedImages)): ?>
-    <p class="text-muted">No images configured yet. Click <strong>Load from API</strong> to fetch available images.</p>
+    <p class="text-muted">No images configured yet. Click <strong>Load from API</strong> to fetch available images from all regions.</p>
     <?php endif; ?>
 
-    <button class="btn btn-success" id="btn-save-images">
-      <i class="fa fa-save"></i> Save Image Configuration
-    </button>
     <div id="images-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
@@ -1707,30 +1714,10 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
 
-    // Saved state (IDs already in DB)
-    var savedImageIds  = <?php echo json_encode(array_values($savedImages)); ?>;
-    var savedNames     = <?php echo json_encode((object)($imageNames ?: new stdClass())); ?>;
-    var savedPrices    = <?php echo json_encode((object)($imagePrices ?: new stdClass())); ?>;
+    var savedImageIds   = <?php echo json_encode(array_values($savedImages)); ?>;
+    var savedNames      = <?php echo json_encode((object)($imageNames ?: new stdClass())); ?>;
+    var savedPrices     = <?php echo json_encode((object)($imagePrices ?: new stdClass())); ?>;
     var savedImgRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
-    var regionNames    = {}; // id -> name for display
-
-    // Load regions into the selector
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions && resp.regions.length) {
-        $.each(resp.regions, function(i, r) {
-          regionNames[r.id] = r.name;
-          $('#images-region-select').append($('<option>').val(r.id).text(r.name));
-        });
-        // Update region display for saved rows using saved region IDs
-        $('#images-table tbody tr').each(function() {
-          var id = $(this).data('id');
-          var rId = savedImgRegions[id] || '';
-          if (rId && regionNames[rId]) {
-            $(this).find('.img-region').text(regionNames[rId]);
-          }
-        });
-      }
-    }, 'json');
 
     function reNumber() {
       $('#images-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -1738,17 +1725,12 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
 
     function addRows(items, regionId, regionLabel) {
       var existingIds = [];
-      $('#images-table tbody tr').each(function() { existingIds.push($(this).data('id')); });
+      $('#images-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
-      var added = 0;
       $.each(items, function(i, img) {
-        if (existingIds.indexOf(img.id) !== -1) {
-          // Update region column if row already exists
-          $('#images-table tbody tr[data-id="' + img.id + '"] .img-region').text(regionLabel || regionId || '—');
-          return;
-        }
+        if (existingIds.indexOf(String(img.id)) !== -1) return; // skip duplicates
         var isSaved = savedImageIds.indexOf(img.id) !== -1;
-        var row = $('<tr>').attr('data-id', img.id).attr('data-region', regionId).attr('data-saved', '0');
+        var row = $('<tr>').attr('data-id', img.id).attr('data-region', regionId || '').attr('data-saved', '0');
         row.html(
           '<td class="row-num"></td>' +
           '<td><input type="checkbox" class="img-check"' + (isSaved ? ' checked' : '') + '></td>' +
@@ -1761,65 +1743,78 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
             $('<span>').text(savedPrices[img.id] || '0').html() + '"></td>'
         );
         $('#images-table tbody').append(row);
-        added++;
       });
       reNumber();
-      if (added === 0) {
-        $('#images-error').text('No new images found for this region (all already listed).').show();
-      }
     }
 
-    $('#btn-load-images').on('click', function() {
-      var regionId    = $('#images-region-select').val();
-      var regionLabel = $('#images-region-select option:selected').text();
-      if (!regionId) {
-        $('#images-error').text('Please select a region before loading.').show();
-        return;
-      }
-      $('#images-loading').show();
-      $('#images-error').hide();
-      $.post(moduleUrl, { action: 'load_images', server_id: serverId, region_id: regionId }, function(resp) {
-        $('#images-loading').hide();
-        if (!resp.success) {
-          $('#images-error').text(resp.error || 'Failed to load images.').show();
-          return;
-        }
-        addRows(resp.images, regionId, regionLabel);
-      }, 'json').fail(function() {
-        $('#images-loading').hide();
-        $('#images-error').text('Request failed. Check server connectivity.').show();
+    // Search filter: hide non-matching rows, but always show checked rows
+    $('#images-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#images-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        if (row.find('.img-check').is(':checked')) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
       });
     });
 
-    // Uncheck a saved row → confirmation → remove row
+    // Load from API: fetch all regions, then load images per region
+    $('#btn-load-images').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#images-loading').show();
+      $('#images-loading-text').text('Fetching regions...');
+      $('#images-error').hide();
+
+      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
+        var regions = (regResp.success && regResp.regions && regResp.regions.length)
+          ? regResp.regions : [{ id: '', name: '—' }];
+
+        var total = regions.length, done = 0, anySuccess = false;
+
+        $.each(regions, function(ri, region) {
+          $.post(moduleUrl, { action: 'load_images', server_id: serverId, region_id: region.id }, function(resp) {
+            if (resp.success && resp.images && resp.images.length) {
+              anySuccess = true;
+              addRows(resp.images, region.id, region.name || region.id || '—');
+            } else if (!resp.success) {
+              $('#images-error').text(resp.error || 'Failed to load images for region: ' + (region.name || region.id)).show();
+            }
+          }, 'json').always(function() {
+            done++;
+            $('#images-loading-text').text('Loading regions (' + done + '/' + total + ')...');
+            if (done === total) {
+              btn.prop('disabled', false);
+              $('#images-loading').hide();
+              if (!anySuccess) {
+                $('#images-error').text('No images returned from any region.').show();
+              }
+            }
+          });
+        });
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#images-loading').hide();
+        $('#images-error').text('Failed to fetch regions. Check server connectivity.').show();
+      });
+    });
+
+    // Uncheck: confirm, then just uncheck (row stays in table)
     $('#images-table').on('change', '.img-check', function() {
       var cb  = $(this);
-      var row = cb.closest('tr');
       if (!cb.is(':checked')) {
-        var name = row.find('.img-api-name').text() || row.data('id');
-        if (!confirm('Remove "' + name + '" from the image selection?')) {
+        var name = cb.closest('tr').find('.img-api-name').text() || cb.closest('tr').data('id');
+        if (!confirm('Deselect "' + name + '" from the image selection?')) {
           cb.prop('checked', true);
-          return;
         }
-        row.remove();
-        reNumber();
       }
     });
 
-    // Select/deselect all
+    // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-images').on('change', function() {
-      if (!$(this).is(':checked')) {
-        if (!confirm('Remove ALL images from the selection?')) {
-          $(this).prop('checked', true);
-          return;
-        }
-        $('#images-table tbody tr').remove();
-        reNumber();
-      } else {
-        $('#images-table tbody tr').each(function() {
-          $(this).find('.img-check').prop('checked', true);
-        });
-      }
+      var checked = $(this).is(':checked');
+      $('#images-table tbody tr:visible').each(function() {
+        $(this).find('.img-check').prop('checked', checked);
+      });
     });
 
     $('#btn-save-images').on('click', function() {
@@ -1869,18 +1864,19 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
   ?>
   <div class="cmp-section">
     <h4>Flavors</h4>
-    <div style="margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <label style="margin:0;"><strong>Region:</strong></label>
-      <select id="flavors-region-select" class="form-control" style="width:auto; min-width:160px;">
-        <option value="">All regions</option>
-      </select>
+    <div class="cmp-toolbar">
       <button class="btn btn-primary" id="btn-load-flavors">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="flavors-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span id="flavors-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="flavors-loading-text">Loading...</span></span>
+      <input type="text" id="flavors-search" class="form-control cmp-search" placeholder="Filter flavors...">
+      <button class="btn btn-success btn-save-right" id="btn-save-flavors">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
     </div>
     <div id="flavors-error" class="alert alert-danger" style="display:none;"></div>
 
+    <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="flavors-table">
       <thead>
         <tr>
@@ -1906,7 +1902,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
           $region      = $flavorRegions[$flvId] ?? '—';
           $group       = $flavorGroups[$flvId] ?? '—';
         ?>
-        <tr data-id="<?php echo htmlspecialchars($flvId); ?>" data-saved="1">
+        <tr data-id="<?php echo htmlspecialchars($flvId); ?>" data-region="<?php echo htmlspecialchars($flavorRegions[$flvId] ?? ''); ?>" data-group="<?php echo htmlspecialchars($group); ?>" data-saved="1">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="flv-check" checked></td>
           <td class="flv-api-name"><?php echo htmlspecialchars($displayName); ?></td>
@@ -1923,14 +1919,12 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
 
     <?php if (empty($savedFlavors)): ?>
-    <p class="text-muted">No flavors configured yet. Click <strong>Load from API</strong> to fetch available flavors.</p>
+    <p class="text-muted">No flavors configured yet. Click <strong>Load from API</strong> to fetch available flavors from all regions.</p>
     <?php endif; ?>
 
-    <button class="btn btn-success" id="btn-save-flavors">
-      <i class="fa fa-save"></i> Save Flavor Configuration
-    </button>
     <div id="flavors-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
@@ -1944,26 +1938,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var savedPrices     = <?php echo json_encode((object)($flavorPrices ?: new stdClass())); ?>;
     var savedFlvRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
     var savedFlvGroups  = <?php echo json_encode((object)($flavorGroups ?: new stdClass())); ?>;
-    var regionNames     = {};
-    var flavorGroupMap  = {}; // flavor_id -> group_name loaded from API
-
-    // Load regions, then auto-load flavor groups for first region
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions && resp.regions.length) {
-        $.each(resp.regions, function(i, r) {
-          regionNames[r.id] = r.name;
-          $('#flavors-region-select').append($('<option>').val(r.id).text(r.name));
-        });
-        // Refresh region labels for saved rows
-        $('#flavors-table tbody tr').each(function() {
-          var id = $(this).data('id');
-          var rId = savedFlvRegions[id] || '';
-          if (rId && regionNames[rId]) $(this).find('.flv-region').text(regionNames[rId]);
-          var g = savedFlvGroups[id] || '';
-          if (g) $(this).find('.flv-group').text(g);
-        });
-      }
-    }, 'json');
+    var flavorGroupMap  = {}; // accumulated across all region loads
 
     function reNumber() {
       $('#flavors-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -1971,21 +1946,13 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
 
     function addRows(items, regionId, regionLabel) {
       var existingIds = [];
-      $('#flavors-table tbody tr').each(function() { existingIds.push($(this).data('id')); });
+      $('#flavors-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
-      var added = 0;
       $.each(items, function(i, flv) {
         var groupName = flavorGroupMap[flv.id] || flv.flavor_group_name || flv.flavor_group_slug || '—';
-        if (existingIds.indexOf(flv.id) !== -1) {
-          // Update region/group for existing rows
-          var existingRow = $('#flavors-table tbody tr[data-id="' + flv.id + '"]');
-          existingRow.find('.flv-region').text(regionLabel || regionId || '—');
-          existingRow.attr('data-region', regionId);
-          if (groupName !== '—') { existingRow.find('.flv-group').text(groupName); existingRow.attr('data-group', groupName); }
-          return;
-        }
+        if (existingIds.indexOf(String(flv.id)) !== -1) return; // skip duplicates
         var isSaved = savedFlavorIds.indexOf(flv.id) !== -1;
-        var row = $('<tr>').attr('data-id', flv.id).attr('data-region', regionId).attr('data-group', groupName).attr('data-saved', '0');
+        var row = $('<tr>').attr('data-id', flv.id).attr('data-region', regionId || '').attr('data-group', groupName).attr('data-saved', '0');
         row.html(
           '<td class="row-num"></td>' +
           '<td><input type="checkbox" class="flv-check"' + (isSaved ? ' checked' : '') + '></td>' +
@@ -2001,94 +1968,96 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
             $('<span>').text(savedPrices[flv.id] || '0').html() + '"></td>'
         );
         $('#flavors-table tbody').append(row);
-        added++;
       });
       reNumber();
-      if (added === 0) {
-        $('#flavors-error').text('No new flavors found for this region (all already listed).').show();
-      }
     }
 
-    $('#btn-load-flavors').on('click', function() {
-      var regionId    = $('#flavors-region-select').val();
-      var regionLabel = $('#flavors-region-select option:selected').text();
-      if (!regionId) {
-        $('#flavors-error').text('Please select a region before loading.').show();
-        return;
-      }
-      $('#flavors-loading').show();
-      $('#flavors-error').hide();
-
-      // Load flavor groups and flavors in parallel, then merge group info
-      $.when(
-        $.post(moduleUrl, { action: 'load_flavors',       server_id: serverId, region_id: regionId }, null, 'json'),
-        $.post(moduleUrl, { action: 'load_flavor_groups', server_id: serverId, region_id: regionId }, null, 'json')
-      ).done(function(flavResp, grpResp) {
-        $('#flavors-loading').hide();
-        var fr = flavResp[0], gr = grpResp[0];
-
-        // Build flavorGroupMap from flavor_group_slug on flavors
-        flavorGroupMap = {};
-        if (gr && gr.success && gr.groups) {
-          var groupNameBySlug = {};
-          $.each(gr.groups, function(i, g) { groupNameBySlug[g.slug] = g.name; });
-          // Will be applied per-flavor using flavor's own group slug
-        }
-
-        if (!fr.success) {
-          $('#flavors-error').text(fr.error || 'Failed to load flavors.').show();
-          return;
-        }
-
-        // Attach group name to each flavor based on its flavor_group_slug field
-        var groupNameBySlug = {};
-        if (gr && gr.success && gr.groups) {
-          $.each(gr.groups, function(i, g) { groupNameBySlug[g.slug] = g.name; });
-        }
-        $.each(fr.flavors, function(i, flv) {
-          var slug = flv.flavor_group_slug || flv.group_slug || '';
-          flv.flavor_group_name = groupNameBySlug[slug] || slug || '—';
-          if (flv.id) flavorGroupMap[flv.id] = flv.flavor_group_name;
-        });
-
-        addRows(fr.flavors, regionId, regionLabel);
-
-        // Save group data for future use
-        if (Object.keys(flavorGroupMap).length > 0) {
-          $.post(moduleUrl, { action: 'save_flavor_groups', server_id: serverId, flavor_groups: flavorGroupMap }, null, 'json');
-        }
-      }).fail(function() {
-        $('#flavors-loading').hide();
-        $('#flavors-error').text('Request failed. Check server connectivity.').show();
+    // Search filter: hide non-matching rows, always show checked rows
+    $('#flavors-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#flavors-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        if (row.find('.flv-check').is(':checked')) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
       });
     });
 
+    // Load from API: fetch all regions, then load flavors + groups per region
+    $('#btn-load-flavors').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#flavors-loading').show();
+      $('#flavors-loading-text').text('Fetching regions...');
+      $('#flavors-error').hide();
+
+      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
+        var regions = (regResp.success && regResp.regions && regResp.regions.length)
+          ? regResp.regions : [{ id: '', name: '—' }];
+
+        var total = regions.length, done = 0, anySuccess = false;
+
+        $.each(regions, function(ri, region) {
+          // Load flavors and flavor groups in parallel for this region
+          $.when(
+            $.post(moduleUrl, { action: 'load_flavors',       server_id: serverId, region_id: region.id }, null, 'json'),
+            $.post(moduleUrl, { action: 'load_flavor_groups', server_id: serverId, region_id: region.id }, null, 'json')
+          ).done(function(flavResp, grpResp) {
+            var fr = flavResp[0], gr = grpResp[0];
+
+            // Build group name lookup for this region
+            var groupNameBySlug = {};
+            if (gr && gr.success && gr.groups) {
+              $.each(gr.groups, function(i, g) { groupNameBySlug[g.slug] = g.name; });
+            }
+
+            if (fr && fr.success && fr.flavors && fr.flavors.length) {
+              anySuccess = true;
+              $.each(fr.flavors, function(i, flv) {
+                var slug = flv.flavor_group_slug || flv.group_slug || '';
+                flv.flavor_group_name = groupNameBySlug[slug] || slug || '—';
+                if (flv.id) flavorGroupMap[flv.id] = flv.flavor_group_name;
+              });
+              addRows(fr.flavors, region.id, region.name || region.id || '—');
+            }
+          }).always(function() {
+            done++;
+            $('#flavors-loading-text').text('Loading regions (' + done + '/' + total + ')...');
+            if (done === total) {
+              btn.prop('disabled', false);
+              $('#flavors-loading').hide();
+              if (!anySuccess) {
+                $('#flavors-error').text('No flavors returned from any region.').show();
+              } else if (Object.keys(flavorGroupMap).length > 0) {
+                // Persist accumulated group map
+                $.post(moduleUrl, { action: 'save_flavor_groups', server_id: serverId, flavor_groups: flavorGroupMap }, null, 'json');
+              }
+            }
+          });
+        });
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#flavors-loading').hide();
+        $('#flavors-error').text('Failed to fetch regions. Check server connectivity.').show();
+      });
+    });
+
+    // Uncheck: confirm, then just uncheck (row stays in table)
     $('#flavors-table').on('change', '.flv-check', function() {
-      var cb = $(this), row = cb.closest('tr');
+      var cb = $(this);
       if (!cb.is(':checked')) {
-        var name = row.find('.flv-api-name').text() || row.data('id');
-        if (!confirm('Remove "' + name + '" from the flavor selection?')) {
+        var name = cb.closest('tr').find('.flv-api-name').text() || cb.closest('tr').data('id');
+        if (!confirm('Deselect "' + name + '" from the flavor selection?')) {
           cb.prop('checked', true);
-          return;
         }
-        row.remove();
-        reNumber();
       }
     });
 
+    // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-flavors').on('change', function() {
-      if (!$(this).is(':checked')) {
-        if (!confirm('Remove ALL flavors from the selection?')) {
-          $(this).prop('checked', true);
-          return;
-        }
-        $('#flavors-table tbody tr').remove();
-        reNumber();
-      } else {
-        $('#flavors-table tbody tr').each(function() {
-          $(this).find('.flv-check').prop('checked', true);
-        });
-      }
+      var checked = $(this).is(':checked');
+      $('#flavors-table tbody tr:visible').each(function() {
+        $(this).find('.flv-check').prop('checked', checked);
+      });
     });
 
     $('#btn-save-flavors').on('click', function() {
@@ -2236,14 +2205,19 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
   <div class="cmp-section">
     <h4>Projects</h4>
     <p class="text-muted">Projects scope VM resources. Select the projects you want to expose to customers and set a friendly Display Name.</p>
-    <div style="margin-bottom:10px;">
+    <div class="cmp-toolbar">
       <button class="btn btn-primary" id="btn-load-projects">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="projects-loading" style="display:none; margin-left:8px;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span id="projects-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <input type="text" id="projects-search" class="form-control cmp-search" placeholder="Filter projects...">
+      <button class="btn btn-success btn-save-right" id="btn-save-projects">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
     </div>
     <div id="projects-error" class="alert alert-danger" style="display:none;"></div>
 
+    <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="projects-table">
       <thead>
         <tr>
@@ -2269,14 +2243,12 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
         <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
 
     <?php if (empty($savedProjects)): ?>
     <p class="text-muted">No projects configured yet. Click <strong>Load from API</strong> or enter a Project ID manually in the server Access Hash field.</p>
     <?php endif; ?>
 
-    <button class="btn btn-success" id="btn-save-projects">
-      <i class="fa fa-save"></i> Save Project Configuration
-    </button>
     <div id="projects-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
@@ -2291,10 +2263,23 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
       $('#projects-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
     }
 
+    // Search filter: hide non-matching rows, always show checked rows
+    $('#projects-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#projects-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        if (row.find('.proj-check').is(':checked')) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
+      });
+    });
+
     $('#btn-load-projects').on('click', function() {
+      var btn = $(this).prop('disabled', true);
       $('#projects-loading').show();
       $('#projects-error').hide();
       $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, function(resp) {
+        btn.prop('disabled', false);
         $('#projects-loading').hide();
         if (!resp.success) {
           $('#projects-error').text(resp.error || 'Failed to load projects.').show();
@@ -2306,11 +2291,11 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
         }
 
         var existingIds = [];
-        $('#projects-table tbody tr').each(function() { existingIds.push($(this).data('id')); });
+        $('#projects-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
         var added = 0;
         $.each(resp.projects, function(i, p) {
-          if (existingIds.indexOf(p.id) !== -1) return;
+          if (existingIds.indexOf(String(p.id)) !== -1) return;
           var isSaved = savedProjIds.indexOf(p.id) !== -1;
           var row = $('<tr>').attr('data-id', p.id);
           row.html(
@@ -2334,32 +2319,23 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
       });
     });
 
+    // Uncheck: confirm, then just uncheck (row stays in table)
     $('#projects-table').on('change', '.proj-check', function() {
-      var cb = $(this), row = cb.closest('tr');
+      var cb = $(this);
       if (!cb.is(':checked')) {
-        var name = row.find('.proj-api-name').text() || row.data('id');
-        if (!confirm('Remove "' + name + '" from the project selection?')) {
+        var name = cb.closest('tr').find('.proj-api-name').text() || cb.closest('tr').data('id');
+        if (!confirm('Deselect "' + name + '" from the project selection?')) {
           cb.prop('checked', true);
-          return;
         }
-        row.remove();
-        reNumber();
       }
     });
 
+    // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-projects').on('change', function() {
-      if (!$(this).is(':checked')) {
-        if (!confirm('Remove ALL projects from the selection?')) {
-          $(this).prop('checked', true);
-          return;
-        }
-        $('#projects-table tbody tr').remove();
-        reNumber();
-      } else {
-        $('#projects-table tbody tr').each(function() {
-          $(this).find('.proj-check').prop('checked', true);
-        });
-      }
+      var checked = $(this).is(':checked');
+      $('#projects-table tbody tr:visible').each(function() {
+        $(this).find('.proj-check').prop('checked', checked);
+      });
     });
 
     $('#btn-save-projects').on('click', function() {
@@ -2404,8 +2380,8 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
   <div class="cmp-section">
     <h4>Security Groups</h4>
     <p class="text-muted">Security groups define firewall rules for VMs. Select the project to load its security groups.</p>
-    <div style="margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <label style="margin:0;"><strong>Project:</strong></label>
+    <div class="cmp-toolbar" style="flex-wrap:wrap;">
+      <label style="margin:0; white-space:nowrap;"><strong>Project:</strong></label>
       <select id="sgs-project-select" class="form-control" style="width:auto; min-width:200px;">
         <?php
         $savedProjects = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
@@ -2417,7 +2393,7 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
         </option>
         <?php endif;
         foreach ($savedProjects as $pid):
-          if ($pid === $serverAccessHash) continue; // already shown above
+          if ($pid === $serverAccessHash) continue;
         ?>
         <option value="<?php echo htmlspecialchars($pid); ?>">
           <?php echo htmlspecialchars($projectNames[$pid] ?? $pid); ?>
@@ -2427,17 +2403,18 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
       </select>
       <input type="text" id="sgs-project-manual" class="form-control" style="width:220px; display:none;"
              placeholder="Paste project UUID">
-      <label style="margin:0;"><strong>Region:</strong></label>
-      <select id="sgs-region-select" class="form-control" style="width:auto; min-width:160px;">
-        <option value="">All / any</option>
-      </select>
       <button class="btn btn-primary" id="btn-load-sgs">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="sgs-loading" style="display:none; margin-left:8px;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span id="sgs-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <input type="text" id="sgs-search" class="form-control cmp-search" placeholder="Filter security groups...">
+      <button class="btn btn-success btn-save-right" id="btn-save-sgs">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
     </div>
     <div id="sgs-error" class="alert alert-danger" style="display:none;"></div>
 
+    <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="sgs-table">
       <thead>
         <tr>
@@ -2465,14 +2442,12 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
         <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
 
     <?php if (empty($savedSgs)): ?>
     <p class="text-muted">No security groups configured yet. Click <strong>Load from API</strong> to fetch from the server's project.</p>
     <?php endif; ?>
 
-    <button class="btn btn-success" id="btn-save-sgs">
-      <i class="fa fa-save"></i> Save Security Group Configuration
-    </button>
     <div id="sgs-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
@@ -2483,15 +2458,6 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
     var savedSgIds = <?php echo json_encode(array_values($savedSgs)); ?>;
     var savedNames = <?php echo json_encode((object)($sgNames ?: new stdClass())); ?>;
 
-    // Load regions into selector
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions && resp.regions.length) {
-        $.each(resp.regions, function(i, r) {
-          $('#sgs-region-select').append($('<option>').val(r.id).text(r.name));
-        });
-      }
-    }, 'json');
-
     // Show manual project input when "— enter manually —" selected
     $('#sgs-project-select').on('change', function() {
       $('#sgs-project-manual').toggle($(this).val() === '');
@@ -2501,18 +2467,31 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
       $('#sgs-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
     }
 
+    // Search filter: hide non-matching rows, always show checked rows
+    $('#sgs-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#sgs-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        if (row.find('.sg-check').is(':checked')) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
+      });
+    });
+
     $('#btn-load-sgs').on('click', function() {
       var projectId = $('#sgs-project-select').val() === ''
         ? $('#sgs-project-manual').val().trim()
         : $('#sgs-project-select').val();
-      var regionId  = $('#sgs-region-select').val();
       if (!projectId) {
         $('#sgs-error').text('Please select or enter a project ID.').show();
         return;
       }
+      var btn = $(this).prop('disabled', true);
       $('#sgs-loading').show();
       $('#sgs-error').hide();
-      $.post(moduleUrl, { action: 'load_security_groups', server_id: serverId, project_id: projectId, region_id: regionId }, function(resp) {
+      // Load without region filter — security groups are project-scoped
+      $.post(moduleUrl, { action: 'load_security_groups', server_id: serverId, project_id: projectId, region_id: '' }, function(resp) {
+        btn.prop('disabled', false);
         $('#sgs-loading').hide();
         if (!resp.success) {
           $('#sgs-error').text(resp.error || 'Failed to load security groups.').show();
@@ -2524,12 +2503,10 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
         }
 
         var existingIds = [];
-        $('#sgs-table tbody tr').each(function() { existingIds.push($(this).data('id')); });
+        $('#sgs-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
-        var added = 0;
         $.each(resp.security_groups, function(i, sg) {
-          if (existingIds.indexOf(sg.id) !== -1) {
-            // Update description for existing rows
+          if (existingIds.indexOf(String(sg.id)) !== -1) {
             $('#sgs-table tbody tr[data-id="' + sg.id + '"] .sg-desc').text(sg.description || '');
             return;
           }
@@ -2545,44 +2522,32 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
               $('<span>').text(savedNames[sg.id] || sg.name).html() + '"></td>'
           );
           $('#sgs-table tbody').append(row);
-          added++;
         });
         reNumber();
-        if (added === 0) {
-          $('#sgs-error').text('No new security groups found (all already listed).').show();
-        }
       }, 'json').fail(function() {
+        btn.prop('disabled', false);
         $('#sgs-loading').hide();
         $('#sgs-error').text('Request failed. Check server connectivity.').show();
       });
     });
 
+    // Uncheck: confirm, then just uncheck (row stays in table)
     $('#sgs-table').on('change', '.sg-check', function() {
-      var cb = $(this), row = cb.closest('tr');
+      var cb = $(this);
       if (!cb.is(':checked')) {
-        var name = row.find('.sg-api-name').text() || row.data('id');
-        if (!confirm('Remove "' + name + '" from the security group selection?')) {
+        var name = cb.closest('tr').find('.sg-api-name').text() || cb.closest('tr').data('id');
+        if (!confirm('Deselect "' + name + '" from the security group selection?')) {
           cb.prop('checked', true);
-          return;
         }
-        row.remove();
-        reNumber();
       }
     });
 
+    // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-sgs').on('change', function() {
-      if (!$(this).is(':checked')) {
-        if (!confirm('Remove ALL security groups from the selection?')) {
-          $(this).prop('checked', true);
-          return;
-        }
-        $('#sgs-table tbody tr').remove();
-        reNumber();
-      } else {
-        $('#sgs-table tbody tr').each(function() {
-          $(this).find('.sg-check').prop('checked', true);
-        });
-      }
+      var checked = $(this).is(':checked');
+      $('#sgs-table tbody tr:visible').each(function() {
+        $(this).find('.sg-check').prop('checked', checked);
+      });
     });
 
     $('#btn-save-sgs').on('click', function() {
@@ -2623,19 +2588,20 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
   ?>
   <div class="cmp-section">
     <h4>Storage Policies (Volume Types)</h4>
-    <p class="text-muted">Volume types define the storage backend (e.g. SSD, NVMe). The API requires a region. Select a region and load types for it.</p>
-    <div style="margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <label style="margin:0;"><strong>Region:</strong></label>
-      <select id="vtypes-region-select" class="form-control" style="width:auto; min-width:160px;">
-        <option value="">— select region —</option>
-      </select>
+    <p class="text-muted">Volume types define the storage backend (e.g. SSD, NVMe). Loads from all regions automatically.</p>
+    <div class="cmp-toolbar">
       <button class="btn btn-primary" id="btn-load-vtypes">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="vtypes-loading" style="display:none; margin-left:8px;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span id="vtypes-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="vtypes-loading-text">Loading...</span></span>
+      <input type="text" id="vtypes-search" class="form-control cmp-search" placeholder="Filter storage policies...">
+      <button class="btn btn-success btn-save-right" id="btn-save-vtypes">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
     </div>
     <div id="vtypes-error" class="alert alert-danger" style="display:none;"></div>
 
+    <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="vtypes-table">
       <thead>
         <tr>
@@ -2661,14 +2627,12 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
         <?php endforeach; ?>
       </tbody>
     </table>
+    </div>
 
     <?php if (empty($savedTypes)): ?>
-    <p class="text-muted">No storage policies configured yet. Click <strong>Load from API</strong> to fetch available volume types.</p>
+    <p class="text-muted">No storage policies configured yet. Click <strong>Load from API</strong> to fetch available volume types from all regions.</p>
     <?php endif; ?>
 
-    <button class="btn btn-success" id="btn-save-vtypes">
-      <i class="fa fa-save"></i> Save Storage Policy Configuration
-    </button>
     <div id="vtypes-save-msg" style="display:none; margin-top:8px;"></div>
   </div>
 
@@ -2679,93 +2643,104 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
     var savedVtIds = <?php echo json_encode(array_values($savedTypes)); ?>;
     var savedNames = <?php echo json_encode((object)($typeNames ?: new stdClass())); ?>;
 
-    // Load regions
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions && resp.regions.length) {
-        $.each(resp.regions, function(i, r) {
-          $('#vtypes-region-select').append($('<option>').val(r.id).text(r.name));
-        });
-      }
-    }, 'json');
-
     function reNumber() {
       $('#vtypes-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
     }
 
-    $('#btn-load-vtypes').on('click', function() {
-      var regionId = $('#vtypes-region-select').val();
-      if (!regionId) {
-        $('#vtypes-error').text('Please select a region before loading storage policies.').show();
-        return;
-      }
-      $('#vtypes-loading').show();
-      $('#vtypes-error').hide();
-      $.post(moduleUrl, { action: 'load_volume_types', server_id: serverId, region_id: regionId }, function(resp) {
-        $('#vtypes-loading').hide();
-        if (!resp.success) {
-          $('#vtypes-error').text(resp.error || 'Failed to load volume types.').show();
-          return;
-        }
-        if (!resp.volume_types || resp.volume_types.length === 0) {
-          $('#vtypes-error').text('No volume types found via the API.').show();
-          return;
-        }
+    function addVtypeRows(items) {
+      var existingIds = [];
+      $('#vtypes-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
-        var existingIds = [];
-        $('#vtypes-table tbody tr').each(function() { existingIds.push($(this).data('id')); });
+      $.each(items, function(i, vt) {
+        if (existingIds.indexOf(String(vt.id)) !== -1) return; // skip duplicates
+        var isSaved = savedVtIds.indexOf(vt.id) !== -1;
+        var row = $('<tr>').attr('data-id', vt.id);
+        row.html(
+          '<td class="row-num"></td>' +
+          '<td><input type="checkbox" class="vt-check"' + (isSaved ? ' checked' : '') + '></td>' +
+          '<td class="vt-api-name">' + $('<span>').text(vt.name).html() + '</td>' +
+          '<td><small class="text-muted">' + $('<span>').text(vt.id).html() + '</small></td>' +
+          '<td><input type="text" class="form-control input-sm vt-name" value="' +
+            $('<span>').text(savedNames[vt.id] || vt.name).html() + '"></td>'
+        );
+        $('#vtypes-table tbody').append(row);
+      });
+      reNumber();
+    }
 
-        var added = 0;
-        $.each(resp.volume_types, function(i, vt) {
-          if (existingIds.indexOf(vt.id) !== -1) return;
-          var isSaved = savedVtIds.indexOf(vt.id) !== -1;
-          var row = $('<tr>').attr('data-id', vt.id);
-          row.html(
-            '<td class="row-num"></td>' +
-            '<td><input type="checkbox" class="vt-check"' + (isSaved ? ' checked' : '') + '></td>' +
-            '<td class="vt-api-name">' + $('<span>').text(vt.name).html() + '</td>' +
-            '<td><small class="text-muted">' + $('<span>').text(vt.id).html() + '</small></td>' +
-            '<td><input type="text" class="form-control input-sm vt-name" value="' +
-              $('<span>').text(savedNames[vt.id] || vt.name).html() + '"></td>'
-          );
-          $('#vtypes-table tbody').append(row);
-          added++;
-        });
-        reNumber();
-        if (added === 0) {
-          $('#vtypes-error').text('No new volume types found (all already listed).').show();
-        }
-      }, 'json').fail(function() {
-        $('#vtypes-loading').hide();
-        $('#vtypes-error').text('Request failed. Check server connectivity.').show();
+    // Search filter: hide non-matching rows, always show checked rows
+    $('#vtypes-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#vtypes-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        if (row.find('.vt-check').is(':checked')) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
       });
     });
 
-    $('#vtypes-table').on('change', '.vt-check', function() {
-      var cb = $(this), row = cb.closest('tr');
-      if (!cb.is(':checked')) {
-        var name = row.find('.vt-api-name').text() || row.data('id');
-        if (!confirm('Remove "' + name + '" from the storage policy selection?')) {
-          cb.prop('checked', true);
+    // Load from API: fetch all regions, then load volume types per region
+    $('#btn-load-vtypes').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#vtypes-loading').show();
+      $('#vtypes-loading-text').text('Fetching regions...');
+      $('#vtypes-error').hide();
+
+      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
+        var regions = (regResp.success && regResp.regions && regResp.regions.length)
+          ? regResp.regions : [];
+
+        if (regions.length === 0) {
+          btn.prop('disabled', false);
+          $('#vtypes-loading').hide();
+          $('#vtypes-error').text('No regions found. Cannot load volume types without a region.').show();
           return;
         }
-        row.remove();
-        reNumber();
+
+        var total = regions.length, done = 0, anySuccess = false;
+
+        $.each(regions, function(ri, region) {
+          $.post(moduleUrl, { action: 'load_volume_types', server_id: serverId, region_id: region.id }, function(resp) {
+            if (resp.success && resp.volume_types && resp.volume_types.length) {
+              anySuccess = true;
+              addVtypeRows(resp.volume_types);
+            }
+          }, 'json').always(function() {
+            done++;
+            $('#vtypes-loading-text').text('Loading regions (' + done + '/' + total + ')...');
+            if (done === total) {
+              btn.prop('disabled', false);
+              $('#vtypes-loading').hide();
+              if (!anySuccess) {
+                $('#vtypes-error').text('No volume types returned from any region.').show();
+              }
+            }
+          });
+        });
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#vtypes-loading').hide();
+        $('#vtypes-error').text('Failed to fetch regions. Check server connectivity.').show();
+      });
+    });
+
+    // Uncheck: confirm, then just uncheck (row stays in table)
+    $('#vtypes-table').on('change', '.vt-check', function() {
+      var cb = $(this);
+      if (!cb.is(':checked')) {
+        var name = cb.closest('tr').find('.vt-api-name').text() || cb.closest('tr').data('id');
+        if (!confirm('Deselect "' + name + '" from the storage policy selection?')) {
+          cb.prop('checked', true);
+        }
       }
     });
 
+    // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-vtypes').on('change', function() {
-      if (!$(this).is(':checked')) {
-        if (!confirm('Remove ALL storage policies from the selection?')) {
-          $(this).prop('checked', true);
-          return;
-        }
-        $('#vtypes-table tbody tr').remove();
-        reNumber();
-      } else {
-        $('#vtypes-table tbody tr').each(function() {
-          $(this).find('.vt-check').prop('checked', true);
-        });
-      }
+      var checked = $(this).is(':checked');
+      $('#vtypes-table tbody tr:visible').each(function() {
+        $(this).find('.vt-check').prop('checked', checked);
+      });
     });
 
     $('#btn-save-vtypes').on('click', function() {
