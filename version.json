@@ -1,9 +1,9 @@
 {
-    "version": "1.1.1-beta.5",
+    "version": "1.1.1-beta.6",
     "released": "2026-04-15",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.5/cloudpe-cmp-whmcs-module-v1.1.1-beta.5.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.6/cloudpe-cmp-whmcs-module-v1.1.1-beta.6.zip",
     "changelog": [
         "Load from API fetches all regions automatically — no region dropdown required",
         "Uncheck behavior fixed — unchecking a row only deselects it (row stays visible for re-selection)",

@@ -2,6 +2,11 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.6] - 2026-04-15
+
+### Fixed
+- **Auto-updater "Download failed: HTTP 404"** — when PHP's `open_basedir` restriction is active, `CURLOPT_FOLLOWLOCATION` is silently disabled and cURL returns the raw GitHub 302 redirect without following it. The installer now switches from `CURLOPT_FILE` to `CURLOPT_RETURNTRANSFER` and implements a manual redirect-following loop (up to 10 hops) as a fallback, so GitHub release asset downloads (which redirect `github.com` → `objects.githubusercontent.com`) work reliably on shared hosting and restricted environments. Error messages now include the final redirected URL for easier diagnosis.
+
 ## [1.1.1-beta.5] - 2026-04-15
 
 ### Fixed

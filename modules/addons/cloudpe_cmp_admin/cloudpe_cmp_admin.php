@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.5');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.6');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -192,6 +192,104 @@ function cloudpe_cmp_admin_check_update(string $updateUrl): array
 }
 
 /**
+ * Fetch a URL and return its body as a string.
+ *
+ * Tries CURLOPT_FOLLOWLOCATION first (fastest). On servers where
+ * open_basedir disables FOLLOWLOCATION, PHP silently ignores the option and
+ * cURL returns the raw 3xx response. We detect that and fall back to a
+ * manual redirect loop (up to 10 hops) so GitHub release asset URLs —
+ * which redirect github.com → objects.githubusercontent.com — always work.
+ *
+ * @param string      $url       URL to fetch
+ * @param int         &$httpCode Final HTTP status code (by reference)
+ * @param string      &$error    cURL error string, empty on success (by ref)
+ * @param string|null &$finalUrl Effective URL after all redirects (by ref)
+ * @return string|false  Response body, or false on failure
+ */
+function cloudpe_cmp_admin_download_url(
+  string $url,
+  int    &$httpCode,
+  string &$error,
+  ?string &$finalUrl
+) {
+  $ua      = 'CloudPe-CMP-WHMCS/' . CLOUDPE_CMP_MODULE_VERSION;
+  $maxHops = 10;
+
+  // --- attempt 1: standard FOLLOWLOCATION ---
+  $ch = curl_init($url);
+  curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT        => 120,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_MAXREDIRS      => $maxHops,
+    CURLOPT_USERAGENT      => $ua,
+    CURLOPT_HTTPHEADER     => ['Accept: application/octet-stream'],
+  ]);
+  $body     = curl_exec($ch);
+  $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+  $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL) ?: $url;
+  $error    = curl_error($ch);
+  curl_close($ch);
+
+  // Success or a non-redirect error — return as-is.
+  if ($httpCode === 200 || ($httpCode < 300 && $httpCode > 0)) {
+    return $body;
+  }
+
+  // --- attempt 2: manual redirect loop (handles open_basedir restrictions) ---
+  if ($httpCode >= 300 && $httpCode < 400) {
+    $currentUrl = $url;
+    for ($hop = 0; $hop < $maxHops; $hop++) {
+      $ch2 = curl_init($currentUrl);
+      curl_setopt_array($ch2, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 120,
+        CURLOPT_FOLLOWLOCATION => false, // manual — one hop at a time
+        CURLOPT_HEADER         => true,  // capture response headers
+        CURLOPT_USERAGENT      => $ua,
+        CURLOPT_HTTPHEADER     => ['Accept: application/octet-stream'],
+      ]);
+      $raw      = curl_exec($ch2);
+      $httpCode = (int)curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+      $error    = curl_error($ch2);
+      $headerSize = curl_getinfo($ch2, CURLINFO_HEADER_SIZE);
+      curl_close($ch2);
+
+      if ($error) {
+        return false;
+      }
+
+      $responseBody    = substr($raw, $headerSize);
+      $responseHeaders = substr($raw, 0, $headerSize);
+
+      if ($httpCode === 200) {
+        $finalUrl = $currentUrl;
+        return $responseBody;
+      }
+
+      if ($httpCode >= 300 && $httpCode < 400) {
+        // Extract Location header
+        if (preg_match('/^Location:\s*(.+)$/im', $responseHeaders, $m)) {
+          $location = trim($m[1]);
+          // Handle relative redirect (rare for GitHub but be safe)
+          if (strpos($location, 'http') !== 0) {
+            $parts    = parse_url($currentUrl);
+            $location = ($parts['scheme'] ?? 'https') . '://' . ($parts['host'] ?? '') . $location;
+          }
+          $currentUrl = $location;
+          continue;
+        }
+      }
+
+      // Non-redirect, non-success — give up
+      return false;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Download a release ZIP and install both module directories.
  *
  * @param string $downloadUrl Direct ZIP download URL
@@ -213,24 +311,24 @@ function cloudpe_cmp_admin_install_update(string $downloadUrl): array
   ];
 
   try {
-    // Download ZIP
-    $ch = curl_init($downloadUrl);
-    $fp = fopen($tmpFile, 'wb');
-    curl_setopt_array($ch, [
-      CURLOPT_FILE           => $fp,
-      CURLOPT_TIMEOUT        => 120,
-      CURLOPT_FOLLOWLOCATION => true,
-      CURLOPT_USERAGENT      => 'CloudPe-CMP-WHMCS/' . CLOUDPE_CMP_MODULE_VERSION,
-    ]);
-    curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error    = curl_error($ch);
-    curl_close($ch);
-    fclose($fp);
+    // Download ZIP.
+    // Use RETURNTRANSFER (not CURLOPT_FILE) so we can inspect the response
+    // before writing and manually follow redirects when open_basedir disables
+    // CURLOPT_FOLLOWLOCATION on the server.
+    $zipContent = cloudpe_cmp_admin_download_url($downloadUrl, $dlHttpCode, $dlError, $dlFinalUrl);
 
-    if ($error || $httpCode !== 200) {
-      throw new \Exception('Download failed: ' . ($error ?: "HTTP $httpCode"));
+    if ($dlError || $dlHttpCode !== 200 || !$zipContent) {
+      throw new \Exception(
+        'Download failed: HTTP ' . $dlHttpCode
+        . ($dlFinalUrl && $dlFinalUrl !== $downloadUrl ? ' (redirected to: ' . $dlFinalUrl . ')' : '')
+        . ($dlError ? ': ' . $dlError : '')
+      );
     }
+
+    if (!file_put_contents($tmpFile, $zipContent)) {
+      throw new \Exception('Failed to write download to temp file.');
+    }
+    unset($zipContent); // free memory
 
     // Extract ZIP
     $zip = new ZipArchive();
