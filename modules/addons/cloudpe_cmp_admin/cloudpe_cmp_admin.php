@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.7');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.8');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -730,8 +730,9 @@ function cloudpe_cmp_admin_load_projects(int $serverId): array
     $projects = [];
     foreach ((array)($result['projects'] ?? []) as $proj) {
       $projects[] = [
-        'id'   => $proj['id'] ?? $proj['uuid'] ?? '',
-        'name' => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
+        'id'        => $proj['id'] ?? $proj['uuid'] ?? '',
+        'name'      => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
+        'region_id' => $proj['region_id'] ?? $proj['region'] ?? '',
       ];
     }
 
@@ -1437,6 +1438,26 @@ function cloudpe_cmp_admin_output(array $vars): void
         echo json_encode(['success' => true]);
         exit;
 
+      case 'save_selected_regions':
+        $selRegions = $_POST['selected_regions'] ?? [];
+        $regNames   = $_POST['region_names'] ?? [];
+        cloudpe_cmp_admin_save_setting($serverId, 'selected_regions', $selRegions);
+        cloudpe_cmp_admin_save_setting($serverId, 'region_names', $regNames);
+        echo json_encode(['success' => true]);
+        exit;
+
+      case 'save_default_projects':
+        $defaults = $_POST['default_projects'] ?? [];
+        cloudpe_cmp_admin_save_setting($serverId, 'default_projects', $defaults);
+        echo json_encode(['success' => true, 'message' => 'Default project configuration saved.']);
+        exit;
+
+      case 'save_additional_projects':
+        $projects = $_POST['projects'] ?? [];
+        cloudpe_cmp_admin_save_setting($serverId, 'additional_projects', $projects);
+        echo json_encode(['success' => true]);
+        exit;
+
       case 'save_security_groups':
         $selectedSgs = $_POST['selected_security_groups'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'selected_security_groups', $selectedSgs);
@@ -1571,9 +1592,11 @@ function cloudpe_cmp_admin_output(array $vars): void
     .cmp-table-wrap > .table { margin-bottom: 0; border: none; }
     .cmp-table-wrap thead th { position: sticky; top: 0; background: #f5f5f5; z-index: 2; box-shadow: 0 1px 0 #ddd; }
     /* Resource tab toolbar */
-    .cmp-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-    .cmp-toolbar .cmp-search { flex: 1; min-width: 140px; max-width: 280px; }
-    .cmp-toolbar .btn-save-right { margin-left: auto; }
+    .cmp-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: nowrap; }
+    .cmp-toolbar .cmp-search { flex: 1; min-width: 140px; }
+    .cmp-toolbar .cmp-spacer { flex: 1; }
+    .cmp-toolbar .cmp-save-msg { white-space: nowrap; font-weight: bold; color: #3c763d; }
+    .cmp-toolbar .cmp-save-msg.error { color: #a94442; }
   </style>
 
   <div class="cmp-tab-nav">
@@ -1612,10 +1635,8 @@ function cloudpe_cmp_admin_output(array $vars): void
         'images'          => 'Images',
         'flavors'         => 'Flavors',
         'disks'           => 'Disk Sizes',
-        'projects'        => 'Projects',
-        'security_groups' => 'Security Groups',
-        'volume_types'    => 'Storage Policies',
-        'create_group'    => 'Create Config Group',
+        'additional'      => 'Additional',
+        'create_group'    => 'Config Groups',
         'updates'         => 'Updates',
       ];
       foreach ($tabs as $tabKey => $tabLabel):
@@ -1640,14 +1661,8 @@ function cloudpe_cmp_admin_output(array $vars): void
         case 'disks':
           cloudpe_cmp_admin_render_disks($serverId, $moduleUrl);
           break;
-        case 'projects':
-          cloudpe_cmp_admin_render_projects($serverId, $moduleUrl);
-          break;
-        case 'security_groups':
-          cloudpe_cmp_admin_render_security_groups($serverId, $moduleUrl);
-          break;
-        case 'volume_types':
-          cloudpe_cmp_admin_render_volume_types($serverId, $moduleUrl);
+        case 'additional':
+          cloudpe_cmp_admin_render_additional($serverId, $moduleUrl);
           break;
         case 'create_group':
           cloudpe_cmp_admin_render_create_group($serverId, $moduleUrl);
@@ -1685,8 +1700,6 @@ function cloudpe_cmp_admin_render_dashboard(int $serverId, string $moduleUrl, $s
   $savedImages  = cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
   $savedFlavors = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
   $savedDisks   = cloudpe_cmp_admin_get_setting($serverId, 'disk_sizes', []);
-  $savedSgs     = cloudpe_cmp_admin_get_setting($serverId, 'selected_security_groups', []);
-  $savedVtypes  = cloudpe_cmp_admin_get_setting($serverId, 'selected_volume_types', []);
   ?>
   <div class="cmp-section">
     <h4>Server Overview</h4>
@@ -1733,26 +1746,6 @@ function cloudpe_cmp_admin_render_dashboard(int $serverId, string $moduleUrl, $s
         </div>
       </div>
     </div>
-    <div class="row">
-      <div class="col-sm-4">
-        <div class="panel panel-default">
-          <div class="panel-body text-center">
-            <h2 style="margin:0;"><?php echo count((array)$savedSgs); ?></h2>
-            <p style="color:#888;">Security Groups</p>
-            <a href="<?php echo $moduleUrl; ?>&tab=security_groups&server_id=<?php echo $serverId; ?>" class="btn btn-xs btn-default">Manage</a>
-          </div>
-        </div>
-      </div>
-      <div class="col-sm-4">
-        <div class="panel panel-default">
-          <div class="panel-body text-center">
-            <h2 style="margin:0;"><?php echo count((array)$savedVtypes); ?></h2>
-            <p style="color:#888;">Storage Policies</p>
-            <a href="<?php echo $moduleUrl; ?>&tab=volume_types&server_id=<?php echo $serverId; ?>" class="btn btn-xs btn-default">Manage</a>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <div class="cmp-section">
@@ -1791,11 +1784,11 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       </button>
       <span id="images-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="images-loading-text">Loading...</span></span>
       <input type="text" id="images-search" class="form-control cmp-search" placeholder="Filter images...">
-      <button class="btn btn-success btn-save-right" id="btn-save-images">
+      <span id="images-save-msg" class="cmp-save-msg" style="display:none;"></span>
+      <button class="btn btn-success" id="btn-save-images">
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
-    <div id="images-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="images-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -1981,8 +1974,8 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
         $.post(moduleUrl, { action: 'save_image_regions', server_id: serverId, regions: regions     }, null, 'json')
       ).always(function() {
         savedImageIds = ids;
-        $('#images-save-msg').text('Image configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
-        setTimeout(function() { $('#images-save-msg').hide(); }, 3000);
+        $('#images-save-msg').text('Configuration saved.').removeClass('error').show();
+        setTimeout(function() { $('#images-save-msg').fadeOut(); }, 3000);
       });
     });
   }());
@@ -2013,11 +2006,11 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       </button>
       <span id="flavors-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="flavors-loading-text">Loading...</span></span>
       <input type="text" id="flavors-search" class="form-control cmp-search" placeholder="Filter flavors...">
-      <button class="btn btn-success btn-save-right" id="btn-save-flavors">
+      <span id="flavors-save-msg" class="cmp-save-msg" style="display:none;"></span>
+      <button class="btn btn-success" id="btn-save-flavors">
         <i class="fa fa-save"></i> Save Configuration
       </button>
     </div>
-    <div id="flavors-save-msg" style="display:none; margin-bottom:6px;"></div>
     <div id="flavors-error" class="alert alert-danger" style="display:none;"></div>
 
     <div class="cmp-table-wrap">
@@ -2254,8 +2247,8 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         $.post(moduleUrl, { action: 'save_flavor_groups',  server_id: serverId, flavor_groups: groups }, null, 'json')
       ).always(function() {
         savedFlavorIds = ids;
-        $('#flavors-save-msg').text('Flavor configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
-        setTimeout(function() { $('#flavors-save-msg').hide(); }, 3000);
+        $('#flavors-save-msg').text('Configuration saved.').removeClass('error').show();
+        setTimeout(function() { $('#flavors-save-msg').fadeOut(); }, 3000);
       });
     });
   }());
@@ -2357,6 +2350,220 @@ function cloudpe_cmp_admin_render_disks(int $serverId, string $moduleUrl): void
   </script>
   <?php
 }
+
+/**
+ * Render the Additional tab.
+ *
+ * Region checkboxes (auto-fetched) + default project per selected region.
+ * Projects fetched via "Load Projects" button and saved for persistence.
+ *
+ * @param int    $serverId  Active server ID
+ * @param string $moduleUrl Base module URL
+ */
+function cloudpe_cmp_admin_render_additional(int $serverId, string $moduleUrl): void
+{
+  $cachedProjects  = (array)cloudpe_cmp_admin_get_setting($serverId, 'additional_projects', []);
+  $defaultProjects = (array)cloudpe_cmp_admin_get_setting($serverId, 'default_projects', []);
+  $selectedRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_regions', []);
+  $regionNameMap   = (array)cloudpe_cmp_admin_get_setting($serverId, 'region_names', []);
+  ?>
+  <div class="cmp-section">
+    <h4>Default Project per Region</h4>
+    <p class="text-muted">Select the regions you want to use, then assign a default project for each selected region.</p>
+
+    <div class="cmp-toolbar">
+      <button class="btn btn-primary" id="btn-load-projects">
+        <i class="fa fa-refresh"></i> Load Projects
+      </button>
+      <span id="additional-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading...</span>
+      <span class="cmp-spacer"></span>
+      <span id="additional-save-msg" class="cmp-save-msg" style="display:none;"></span>
+      <button class="btn btn-success" id="btn-save-additional">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
+    </div>
+    <div id="additional-error" class="alert alert-danger" style="display:none;"></div>
+
+    <!-- Region checkboxes (auto-loaded) -->
+    <div id="additional-region-checks" style="margin-bottom:12px;">
+      <span id="regions-auto-loading"><i class="fa fa-spinner fa-spin"></i> Loading regions...</span>
+    </div>
+
+    <!-- Table: only selected regions as columns -->
+    <div class="cmp-table-wrap">
+    <table class="table table-bordered" id="additional-table">
+      <thead><tr><th style="width:140px;"></th></tr></thead>
+      <tbody><tr><td><strong>Default Project</strong></td></tr></tbody>
+    </table>
+    </div>
+
+    <p class="text-muted" id="additional-empty-msg" style="display:none;">No regions selected. Check the regions above to configure default projects.</p>
+  </div>
+
+  <script>
+  (function() {
+    var serverId  = <?php echo $serverId; ?>;
+    var moduleUrl = '<?php echo $moduleUrl; ?>';
+    var selectedRegionIds = <?php echo json_encode(array_values($selectedRegions)); ?>;
+    var regionNameMap     = <?php echo json_encode((object)($regionNameMap ?: new stdClass())); ?>;
+    var defaultProjects   = <?php echo json_encode((object)($defaultProjects ?: new stdClass())); ?>;
+    var cachedProjects    = <?php echo json_encode($cachedProjects); ?>;
+    var allProjects       = cachedProjects.length ? cachedProjects : [];
+
+    function esc(s) { return $('<span>').text(s).html(); }
+
+    function buildProjectSelect(regionId) {
+      var val = defaultProjects[regionId] || '';
+      var html = '<select class="form-control input-sm region-project" data-region="' + esc(regionId) + '">';
+      html += '<option value="">— none —</option>';
+      for (var i = 0; i < allProjects.length; i++) {
+        var p = allProjects[i];
+        var pRegion = p.region_id || '';
+        if (pRegion && pRegion !== regionId) continue;
+        var label = p.name || p.id;
+        var sel = (p.id === val) ? ' selected' : '';
+        html += '<option value="' + esc(p.id) + '"' + sel + '>' + esc(label) + '</option>';
+      }
+      if (val && html.indexOf('value="' + val + '"') === -1) {
+        html += '<option value="' + esc(val) + '" selected>' + esc(val) + '</option>';
+      }
+      html += '</select>';
+      return html;
+    }
+
+    function rebuildTable() {
+      var checked = [];
+      $('#additional-region-checks .region-check:checked').each(function() {
+        checked.push({ id: String($(this).data('id')), name: String($(this).data('name')) });
+      });
+
+      if (checked.length === 0) {
+        $('#additional-table thead').html('<tr><th style="width:140px;"></th></tr>');
+        $('#additional-table tbody').html('<tr><td><strong>Default Project</strong></td></tr>');
+        $('#additional-empty-msg').show();
+        return;
+      }
+      $('#additional-empty-msg').hide();
+
+      var thead = '<tr><th style="width:140px;"></th>';
+      var tbody = '<tr><td><strong>Default Project</strong></td>';
+      $.each(checked, function(i, r) {
+        thead += '<th class="region-col text-center" data-region="' + esc(r.id) + '">' + esc(r.name) + '</th>';
+        tbody += '<td class="project-cell" data-region="' + esc(r.id) + '">' + buildProjectSelect(r.id) + '</td>';
+      });
+      thead += '</tr>';
+      tbody += '</tr>';
+
+      $('#additional-table thead').html(thead);
+      $('#additional-table tbody').html(tbody);
+    }
+
+    function buildRegionCheckboxes(regions) {
+      var container = $('#additional-region-checks');
+      container.empty();
+
+      $.each(regions, function(i, r) {
+        var isChecked = selectedRegionIds.indexOf(String(r.id)) !== -1;
+        var lbl = $('<label class="checkbox-inline" style="margin-right:16px;">');
+        lbl.append(
+          $('<input type="checkbox" class="region-check">')
+            .attr('data-id', r.id).attr('data-name', r.name)
+            .prop('checked', isChecked),
+          ' ' + r.name
+        );
+        container.append(lbl);
+      });
+    }
+
+    // Rebuild table when region checkboxes change
+    $('#additional-region-checks').on('change', '.region-check', function() {
+      rebuildTable();
+    });
+
+    // Auto-fetch regions on page load
+    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
+      $('#regions-auto-loading').remove();
+      if (resp.success && resp.regions && resp.regions.length) {
+        // Update regionNameMap from API
+        $.each(resp.regions, function(i, r) { regionNameMap[r.id] = r.name; });
+        buildRegionCheckboxes(resp.regions);
+        rebuildTable();
+      } else {
+        $('#additional-region-checks').html('<span class="text-danger">Failed to load regions.</span>');
+      }
+    }, 'json').fail(function() {
+      $('#regions-auto-loading').remove();
+      $('#additional-region-checks').html('<span class="text-danger">Failed to load regions. Check server connectivity.</span>');
+    });
+
+    // Load Projects button
+    $('#btn-load-projects').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#additional-loading').show();
+      $('#additional-error').hide();
+
+      $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, function(resp) {
+        btn.prop('disabled', false);
+        $('#additional-loading').hide();
+
+        if (!resp.success) {
+          $('#additional-error').text(resp.error || 'Failed to load projects.').show();
+          return;
+        }
+        if (!resp.projects || resp.projects.length === 0) {
+          $('#additional-error').text('No projects returned by the API.').show();
+          return;
+        }
+
+        allProjects = resp.projects;
+        rebuildTable();
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#additional-loading').hide();
+        $('#additional-error').text('Request failed. Check server connectivity.').show();
+      });
+    });
+
+    // Save
+    $('#btn-save-additional').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#additional-save-msg').hide();
+
+      var regions = [], rNames = {}, defaults = {};
+
+      $('#additional-region-checks .region-check:checked').each(function() {
+        var rId = String($(this).data('id'));
+        var rName = String($(this).data('name'));
+        regions.push(rId);
+        rNames[rId] = rName;
+      });
+
+      $('#additional-table .region-project').each(function() {
+        var rId = String($(this).data('region'));
+        var pId = $(this).val();
+        if (rId && pId) defaults[rId] = pId;
+      });
+
+      $.when(
+        $.post(moduleUrl, { action: 'save_selected_regions',  server_id: serverId, selected_regions: regions, region_names: rNames }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_default_projects',  server_id: serverId, default_projects: defaults }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_additional_projects', server_id: serverId, projects: allProjects }, null, 'json')
+      ).always(function() {
+        btn.prop('disabled', false);
+        selectedRegionIds = regions;
+        defaultProjects = defaults;
+        $('#additional-save-msg').text('Configuration saved.').removeClass('error').show();
+        setTimeout(function() { $('#additional-save-msg').fadeOut(); }, 3000);
+      });
+    });
+  }());
+  </script>
+  <?php
+}
+
+// ---------------------------------------------------------------------------
+// Legacy tab renderers (kept for AJAX handler compatibility)
+// ---------------------------------------------------------------------------
 
 /**
  * Render the Projects tab.
@@ -2987,40 +3194,8 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
       <strong>Products/Services &rarr; [Product] &rarr; Configurable Options</strong>.
     </p>
 
-    <!-- Existing groups -->
-    <?php if (!empty((array)$existingGroups)): ?>
-    <div class="panel panel-default" style="margin-bottom:20px;">
-      <div class="panel-heading">
-        <h4 class="panel-title">Existing Config Groups
-          <a href="configoptiongroups.php" target="_blank" class="btn btn-xs btn-default pull-right">
-            <i class="fa fa-external-link"></i> Manage in WHMCS
-          </a>
-        </h4>
-      </div>
-      <table class="table table-bordered" style="margin-bottom:0;">
-        <thead>
-          <tr><th>#</th><th>Group Name</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          <?php foreach ($existingGroups as $i => $grp): ?>
-          <tr>
-            <td><?php echo $i + 1; ?></td>
-            <td><?php echo htmlspecialchars($grp->name); ?></td>
-            <td>
-              <a href="configoptiongroups.php?action=edit&id=<?php echo (int)$grp->id; ?>" target="_blank"
-                 class="btn btn-xs btn-default">
-                <i class="fa fa-edit"></i> Edit
-              </a>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
-    </div>
-    <?php endif; ?>
-
     <!-- Create new group -->
-    <div class="panel panel-default" style="max-width:640px;">
+    <div class="panel panel-default" style="max-width:640px; margin-bottom:20px;">
       <div class="panel-heading"><h4 class="panel-title">Create New Group</h4></div>
       <div class="panel-body">
         <h5>Options to be created (in this order):</h5>
@@ -3036,7 +3211,6 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
             <?php if (empty($savedDisks)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=disks&server_id=<?php echo $serverId; ?>">configure disk sizes first</a></span><?php endif; ?>
           </li>
           <li><strong>Storage Policy</strong> — <strong><?php echo count((array)$savedVtypes); ?></strong> option(s)
-            <?php if (empty($savedVtypes)): ?><span class="text-muted"> — <a href="<?php echo $moduleUrl; ?>&tab=volume_types&server_id=<?php echo $serverId; ?>">configure storage policies</a> (optional)</span><?php endif; ?>
           </li>
         </ol>
 
@@ -3058,6 +3232,38 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
         <?php endif; ?>
       </div>
     </div>
+
+    <!-- Existing groups -->
+    <?php if (!empty((array)$existingGroups)): ?>
+    <div class="panel panel-default" style="margin-bottom:20px;">
+      <div class="panel-heading">
+        <h4 class="panel-title">Existing Config Groups
+          <a href="configproductoptions.php" target="_blank" class="btn btn-xs btn-default pull-right">
+            <i class="fa fa-external-link"></i> View all
+          </a>
+        </h4>
+      </div>
+      <table class="table table-bordered" style="margin-bottom:0;">
+        <thead>
+          <tr><th>#</th><th>Group Name</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          <?php foreach ($existingGroups as $i => $grp): ?>
+          <tr>
+            <td><?php echo $i + 1; ?></td>
+            <td><?php echo htmlspecialchars($grp->name); ?></td>
+            <td>
+              <a href="configproductoptions.php?action=managegroup&id=<?php echo (int)$grp->id; ?>" target="_blank"
+                 class="btn btn-xs btn-default">
+                <i class="fa fa-edit"></i> Edit
+              </a>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <?php endif; ?>
   </div>
 
   <script>
@@ -3079,7 +3285,7 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
         $('#btn-create-group').prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Group');
         var msg = $('#create-group-msg');
         if (resp.success) {
-          msg.html(resp.message + ' <a href="configoptiongroups.php" target="_blank">View groups &rarr;</a>')
+          msg.html(resp.message + ' <a href="configproductoptions.php" target="_blank">View groups &rarr;</a>')
              .removeClass('alert-danger').addClass('alert alert-success').show();
           // Reload page after short delay so new group appears in the existing list
           setTimeout(function() { location.reload(); }, 2500);

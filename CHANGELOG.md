@@ -2,6 +2,16 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.8] - 2026-04-16
+
+### Changed
+- **Removed Projects, Security Groups, Storage Policies tabs** from admin navigation. AJAX handlers and loader functions retained for server module compatibility.
+- **New "Additional" tab** — regions auto-fetched on page load as checkboxes; "Load Projects" button fetches projects from API filtered by region; default project per region saved and restored on reload.
+- **Config Groups tab** — "Create New Group" panel moved above "Existing Config Groups"; "Manage in WHMCS" replaced with "View all" linking to `configproductoptions.php`; edit buttons now link to correct WHMCS config options page.
+- **Unified toolbar layout** across Images, Flavors, and Additional tabs — Load button + loading spinner on left, search input in center (flex), save message + Save button on right.
+- **Save message** now appears inline in the toolbar before the Save button (plain text, not full-width alert). Save button disables during save and re-enables on completion.
+- **Dashboard** — removed Security Groups and Storage Policies count panels.
+
 ## [1.1.1-beta.7] - 2026-04-15
 
 ### Fixed
