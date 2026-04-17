@@ -392,8 +392,13 @@ function cloudpe_cmp_CreateAccount(array $params): string
         $networkId        = trim($params['configoption9'] ?? '');
         $ipVersion        = $params['configoption10'] ?: 'ipv4';
 
-        // Project ID resolution: per-product override > server-level Access Hash
-        $projectId = $projectOverride !== '' ? $projectOverride : trim($params['serveraccesshash'] ?? '');
+        // Project ID resolution: per-product override > admin default project > server-level Access Hash
+        $serverId       = (int)($params['serverid'] ?? 0);
+        $defaultProject = trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_project'));
+        $defaultRegion  = trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_region'));
+        $projectId = $projectOverride !== ''
+            ? $projectOverride
+            : ($defaultProject !== '' ? $defaultProject : trim($params['serveraccesshash'] ?? ''));
 
         // Get flavor from Configurable Options or default
         $flavorId = trim(
@@ -455,6 +460,10 @@ function cloudpe_cmp_CreateAccount(array $params): string
 
         if (!empty($networkId)) {
             $instanceData['network_id'] = $networkId;
+        }
+
+        if (!empty($defaultRegion)) {
+            $instanceData['region_id'] = $defaultRegion;
         }
 
         if (!empty($ipVersion) && $ipVersion !== 'ipv4') {

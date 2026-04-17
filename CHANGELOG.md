@@ -2,6 +2,21 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1-beta.9] - 2026-04-17
+
+### Fixed
+- **Flavors Name column** — after Save Configuration + reload, Name column was showing Display Name (UUID/label) instead of the API flavor name (e.g. `a.cpu1.4g`). API names are now persisted separately via `flavor_api_names` setting.
+- **Images display name falling back to UUID** — when no display name was saved, the `img-name` input defaulted to the UUID, causing it to be saved as the display name and appear in the order dropdown. Now falls back to empty so admin must load from API to get proper names.
+- **Image name resolution** — `load_images` now tries `display_name`, `os_name`, `label`, `title`, `os_distro + os_version` before falling back to `name`, reducing UUID-as-name occurrences.
+- **Configurable option format** — sub-option `optionname` was stored as `DisplayName|UUID` (reversed). WHMCS shows the label after `|` and passes the value before `|` to the module, so the format is now correctly `UUID|DisplayName` for images/flavors and `SizeGB|Label` for disk space. Order page dropdowns now show display names instead of UUIDs.
+- **Disk Sizes Save button** — now disables during save (same pattern as Images, Flavors, Volume Types tabs).
+
+### Changed
+- **Additional tab** — Default Project dropdown replaced with a radio-button table showing Region and Project per row. Selecting a row saves both project ID and region ID so the correct row is pre-selected on reload.
+- **Additional tab** — Removed Default Region option, section title, and subtitle text.
+- **Toolbar spinners** — Images and Flavors tabs now have two separate indicators: loading spinner appears on the left (near Load from API) and saving spinner appears on the right (near Save Configuration). Previously a single spinner was reused for both.
+- **Loading progress text** — Images shows "Fetching images from region (N/M)...", Flavors shows "Fetching flavors from region (N/M)...", Volume Types shows "Fetching volume types from region (N/M)...".
+
 ## [1.1.1-beta.8] - 2026-04-16
 
 ### Changed

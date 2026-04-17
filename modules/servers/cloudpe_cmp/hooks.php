@@ -89,14 +89,14 @@ function cloudpe_cmp_product_is_cmp(int $productId): bool
  * provisioned through the CMP API, so nameserver inputs are noise.
  */
 add_hook('ClientAreaHeadOutput', 1, function ($vars) {
+    // Inject on any cart.php page and on configureproduct.php. We key
+    // off the product's servertype below, so widening the page check is
+    // safe and avoids missing cart flows that route through different
+    // filenames/actions depending on WHMCS theme/version.
+    $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
     $page = $vars['filename'] ?? '';
-    // Cover cart/configure (most common) plus a few related URLs the
-    // flag may travel through (e.g. upgrade flows).
-    $stepAction = $_REQUEST['a'] ?? '';
-    $cartAction = $_REQUEST['ca'] ?? '';
-    $isConfigureStep = ($page === 'cart')
-        && in_array($stepAction, ['confproduct', 'configureproduct', 'confdomains'], true);
-    if (!$isConfigureStep && $cartAction !== 'configureproduct') {
+    $onCart = ($scriptName === 'cart.php') || ($page === 'cart') || ($scriptName === 'configureproduct.php');
+    if (!$onCart) {
         return '';
     }
 
