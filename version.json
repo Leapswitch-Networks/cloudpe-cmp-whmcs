@@ -1,17 +1,19 @@
 {
-    "version": "1.1.1-beta.9",
-    "released": "2026-04-17",
+    "version": "1.1.1",
+    "released": "2026-04-22",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1-beta.9/cloudpe-cmp-whmcs-module-v1.1.1-beta.9.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1/cloudpe-cmp-whmcs-module-v1.1.1.zip",
     "changelog": [
-        "Flavors: persist API name separately from display name; fix Name column showing UUID after save/reload",
-        "Images: fix display name falling back to UUID; expand image name field resolution",
-        "Config options: fix optionname format (was DisplayName|ID, now ID|DisplayName) so order page shows display names",
-        "Additional tab: replace Default Project dropdown with radio-button table showing Region + Project per row",
-        "Additional tab: remove Default Region option, title, and subtitle",
-        "Toolbar: separate loading spinner (left) from saving spinner (right) for Images and Flavors tabs",
-        "Loading text: Images shows 'Fetching images from region (N/M)', Flavors shows 'Fetching flavors from region (N/M)'",
-        "Disk Sizes: Save button now disables during save"
+        "Provisioning: sanitize UUIDs for security group / network / project config options; reject WHMCS placeholders like 'error'",
+        "Provisioning: volume_type sanitizer rejects numeric values so a stray disk size cannot be sent as volume_type",
+        "Provisioning: billing period validated against {monthly, hourly}; IP version against {ipv4, ipv6, both}",
+        "Provisioning: region resolution prefers the flavor's saved region over the admin default region",
+        "API: createInstance now forwards region_id, network_id, and ip_version when set",
+        "API: listProjects accepts an optional regionId filter",
+        "Admin: global Server + Region selector shared across all tabs",
+        "Admin: Images / Flavors tabs load from the currently selected region only (previously iterated every region)",
+        "Admin: Additional tab reloads projects when the region changes",
+        "Admin: row numbers only count visible rows after region filtering"
     ]
 }

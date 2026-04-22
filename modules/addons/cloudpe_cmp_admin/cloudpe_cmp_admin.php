@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1-beta.9');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -722,7 +722,7 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): a
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), projects (array)|error (string)
  */
-function cloudpe_cmp_admin_load_projects(int $serverId): array
+function cloudpe_cmp_admin_load_projects(int $serverId, string $regionId = ''): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -744,7 +744,7 @@ function cloudpe_cmp_admin_load_projects(int $serverId): array
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listProjects();
+    $result = $api->listProjects($regionId);
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load projects.'];
@@ -752,10 +752,16 @@ function cloudpe_cmp_admin_load_projects(int $serverId): array
 
     $projects = [];
     foreach ((array)($result['projects'] ?? []) as $proj) {
+      $projRegion = $proj['region_id'] ?? $proj['region'] ?? '';
+      // Client-side filter: if a region was requested and the project has a
+      // region field, only include projects that match.
+      if ($regionId !== '' && $projRegion !== '' && $projRegion !== $regionId) {
+        continue;
+      }
       $projects[] = [
         'id'        => $proj['id'] ?? $proj['uuid'] ?? '',
         'name'      => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
-        'region_id' => $proj['region_id'] ?? $proj['region'] ?? '',
+        'region_id' => $projRegion,
       ];
     }
 
@@ -1365,7 +1371,8 @@ function cloudpe_cmp_admin_output(array $vars): void
         exit;
 
       case 'load_projects':
-        echo json_encode(cloudpe_cmp_admin_load_projects($serverId));
+        $projRegionId = trim($_POST['region_id'] ?? '');
+        echo json_encode(cloudpe_cmp_admin_load_projects($serverId, $projRegionId));
         exit;
 
       case 'load_security_groups':
@@ -1583,13 +1590,13 @@ function cloudpe_cmp_admin_output(array $vars): void
       </div>
     <?php else: ?>
 
-    <!-- Server selector -->
-    <div id="cmp-server-selector">
-      <form method="get" style="display:inline-block;">
+    <!-- Server + Region selector -->
+    <div id="cmp-server-selector" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+      <form method="get" style="display:flex; align-items:center; gap:8px;">
         <input type="hidden" name="module" value="cloudpe_cmp_admin">
         <input type="hidden" name="tab" value="<?php echo htmlspecialchars($activeTab); ?>">
-        <label><strong>Server:</strong></label>
-        <select name="server_id" class="form-control" style="display:inline-block; width:auto; margin-left:8px;"
+        <label style="margin:0;"><strong>Server:</strong></label>
+        <select name="server_id" class="form-control" style="width:auto;"
                 onchange="this.form.submit()">
           <?php foreach ($servers as $srv): ?>
             <option value="<?php echo (int)$srv->id; ?>"
@@ -1599,7 +1606,58 @@ function cloudpe_cmp_admin_output(array $vars): void
           <?php endforeach; ?>
         </select>
       </form>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label style="margin:0;"><strong>Region:</strong></label>
+        <select id="cmp-region-select" class="form-control" style="width:auto; min-width:160px;">
+          <option value="">Loading regions...</option>
+        </select>
+      </div>
     </div>
+    <script>
+    // Global region state — shared across all tabs.
+    window.cmpServerId  = <?php echo $serverId; ?>;
+    window.cmpModuleUrl = '<?php echo $moduleUrl; ?>';
+    window.cmpRegionId  = '';
+    window.cmpRegions   = {};  // id → name
+
+    $.post(window.cmpModuleUrl, { action: 'load_regions', server_id: window.cmpServerId, service: 'vm' }, function(resp) {
+      var $sel = $('#cmp-region-select').empty();
+      if (resp.success && resp.regions && resp.regions.length) {
+        resp.regions.forEach(function(r) {
+          window.cmpRegions[r.id] = r.name || r.id;
+          $sel.append('<option value="' + $('<span>').text(r.id).html() + '">' + $('<span>').text(r.name || r.id).html() + '</option>');
+        });
+        window.cmpRegionId = resp.regions[0].id;
+      } else {
+        $sel.append('<option value="">No regions found</option>');
+      }
+      $(document).trigger('cmp:regions-loaded');
+    }, 'json').fail(function() {
+      $('#cmp-region-select').empty().append('<option value="">Failed to load</option>');
+      $(document).trigger('cmp:regions-loaded');
+    });
+
+    function cmpFilterTablesByRegion(regionId) {
+      ['#images-table', '#flavors-table'].forEach(function(tbl) {
+        var n = 0;
+        $(tbl + ' tbody tr').each(function() {
+          var rowRegion = $(this).attr('data-region') || '';
+          var show = !regionId || rowRegion === '' || rowRegion === regionId;
+          $(this).toggle(show);
+          $(this).find('.row-num').text(show ? ++n : '');
+        });
+      });
+    }
+
+    $('#cmp-region-select').on('change', function() {
+      window.cmpRegionId = $(this).val();
+      cmpFilterTablesByRegion(window.cmpRegionId);
+    });
+
+    $(document).on('cmp:regions-loaded', function() {
+      cmpFilterTablesByRegion(window.cmpRegionId);
+    });
+    </script>
 
     <!-- Tab navigation -->
     <ul class="nav nav-tabs" role="tablist">
@@ -1817,21 +1875,21 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var savedNames      = <?php echo json_encode((object)($imageNames ?: new stdClass())); ?>;
     var savedPrices     = <?php echo json_encode((object)($imagePrices ?: new stdClass())); ?>;
     var savedImgRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
-    var regionNames     = {}; // id -> display name, loaded on init
 
-    // Background: load regions to resolve IDs to display names for saved rows
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions) {
-        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
-        $('#images-table tbody tr').each(function() {
-          var rId = $(this).attr('data-region') || '';
-          if (rId && regionNames[rId]) $(this).find('.img-region').text(regionNames[rId]);
-        });
-      }
-    }, 'json');
+    // Resolve region IDs to names for saved rows — wait for global region map
+    function resolveImgRegionNames() {
+      $('#images-table tbody tr').each(function() {
+        var rId = $(this).attr('data-region') || '';
+        if (rId && window.cmpRegions[rId]) $(this).find('.img-region').text(window.cmpRegions[rId]);
+      });
+    }
+    $(document).on('cmp:regions-loaded', resolveImgRegionNames);
 
     function reNumber() {
-      $('#images-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
+      var n = 0;
+      $('#images-table tbody tr').each(function() {
+        $(this).find('.row-num').text($(this).is(':visible') ? ++n : '');
+      });
     }
 
     function addRows(items, regionId, regionLabel) {
@@ -1869,46 +1927,28 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       });
     });
 
-    // Load from API: fetch all regions, then load images per region
+    // Load from API: fetch images for the currently selected region
     $('#btn-load-images').on('click', function() {
-      var btn = $(this).prop('disabled', true);
+      var btn      = $(this).prop('disabled', true);
+      var regionId = window.cmpRegionId || '';
+      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
+      // Remove previously-loaded (unsaved) rows for this region so re-fetch is a clean refresh
+      $('#images-table tbody tr[data-region="' + regionId + '"][data-saved="0"]').remove();
       $('#btn-save-images').prop('disabled', true);
       $('#images-loading').show();
-      $('#images-loading-text').text('Fetching images from region...');
+      $('#images-loading-text').text('Loading images...');
       $('#images-error').hide();
 
-      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
-        var regions = (regResp.success && regResp.regions && regResp.regions.length)
-          ? regResp.regions : [{ id: '', name: '—' }];
-
-        var total = regions.length, done = 0, anySuccess = false;
-
-        $.each(regions, function(ri, region) {
-          $.post(moduleUrl, { action: 'load_images', server_id: serverId, region_id: region.id }, function(resp) {
-            if (resp.success && resp.images && resp.images.length) {
-              anySuccess = true;
-              addRows(resp.images, region.id, region.name || region.id || '—');
-            } else if (!resp.success) {
-              $('#images-error').text(resp.error || 'Failed to load images for region: ' + (region.name || region.id)).show();
-            }
-          }, 'json').always(function() {
-            done++;
-            $('#images-loading-text').text('Fetching images from region (' + done + '/' + total + ')...');
-            if (done === total) {
-              btn.prop('disabled', false);
-              $('#btn-save-images').prop('disabled', false);
-              $('#images-loading').hide();
-              if (!anySuccess) {
-                $('#images-error').text('No images returned from any region.').show();
-              }
-            }
-          });
-        });
-      }, 'json').fail(function() {
+      $.post(moduleUrl, { action: 'load_images', server_id: serverId, region_id: regionId }, function(resp) {
+        if (resp.success && resp.images && resp.images.length) {
+          addRows(resp.images, regionId, regionLabel);
+        } else {
+          $('#images-error').text(resp.error || 'No images returned for the selected region.').show();
+        }
+      }, 'json').always(function() {
         btn.prop('disabled', false);
         $('#btn-save-images').prop('disabled', false);
         $('#images-loading').hide();
-        $('#images-error').text('Failed to fetch regions. Check server connectivity.').show();
       });
     });
 
@@ -2062,7 +2102,6 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var savedNames      = <?php echo json_encode((object)($flavorNames ?: new stdClass())); ?>;
     var savedPrices     = <?php echo json_encode((object)($flavorPrices ?: new stdClass())); ?>;
     var savedFlvRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
-    var regionNames     = {}; // id -> display name, loaded on init
 
     // Build the auto Display Name shown to customers: "X vCPU, Y GB RAM".
     function autoDisplayName(flv) {
@@ -2071,19 +2110,20 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       return vcpu + ' vCPU, ' + ram + ' GB RAM';
     }
 
-    // Background: load regions to resolve IDs to display names for saved rows
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions) {
-        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
-        $('#flavors-table tbody tr').each(function() {
-          var rId = $(this).attr('data-region') || '';
-          if (rId && regionNames[rId]) $(this).find('.flv-region').text(regionNames[rId]);
-        });
-      }
-    }, 'json');
+    // Resolve region IDs to names for saved rows — wait for global region map
+    function resolveFlvRegionNames() {
+      $('#flavors-table tbody tr').each(function() {
+        var rId = $(this).attr('data-region') || '';
+        if (rId && window.cmpRegions[rId]) $(this).find('.flv-region').text(window.cmpRegions[rId]);
+      });
+    }
+    $(document).on('cmp:regions-loaded', resolveFlvRegionNames);
 
     function reNumber() {
-      $('#flavors-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
+      var n = 0;
+      $('#flavors-table tbody tr').each(function() {
+        $(this).find('.row-num').text($(this).is(':visible') ? ++n : '');
+      });
     }
 
     function addRows(items, regionId, regionLabel) {
@@ -2140,44 +2180,28 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       });
     });
 
-    // Load from API: fetch all regions, then load flavors + groups per region
+    // Load from API: fetch flavors for the currently selected region
     $('#btn-load-flavors').on('click', function() {
-      var btn = $(this).prop('disabled', true);
+      var btn         = $(this).prop('disabled', true);
+      var regionId    = window.cmpRegionId || '';
+      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
+      // Remove previously-loaded (unsaved) rows for this region so re-fetch is a clean refresh
+      $('#flavors-table tbody tr[data-region="' + regionId + '"][data-saved="0"]').remove();
       $('#btn-save-flavors').prop('disabled', true);
       $('#flavors-loading').show();
-      $('#flavors-loading-text').text('Fetching regions...');
+      $('#flavors-loading-text').text('Loading flavors...');
       $('#flavors-error').hide();
 
-      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
-        var regions = (regResp.success && regResp.regions && regResp.regions.length)
-          ? regResp.regions : [{ id: '', name: '—' }];
-
-        var total = regions.length, done = 0, anySuccess = false;
-
-        $.each(regions, function(ri, region) {
-          $.post(moduleUrl, { action: 'load_flavors', server_id: serverId, region_id: region.id }, function(fr) {
-            if (fr && fr.success && fr.flavors && fr.flavors.length) {
-              anySuccess = true;
-              addRows(fr.flavors, region.id, region.name || region.id || '—');
-            }
-          }, 'json').always(function() {
-            done++;
-            $('#flavors-loading-text').text('Fetching flavors from region (' + done + '/' + total + ')...');
-            if (done === total) {
-              btn.prop('disabled', false);
-              $('#btn-save-flavors').prop('disabled', false);
-              $('#flavors-loading').hide();
-              if (!anySuccess) {
-                $('#flavors-error').text('No flavors returned from any region.').show();
-              }
-            }
-          });
-        });
-      }, 'json').fail(function() {
+      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId, region_id: regionId }, function(fr) {
+        if (fr && fr.success && fr.flavors && fr.flavors.length) {
+          addRows(fr.flavors, regionId, regionLabel);
+        } else {
+          $('#flavors-error').text(fr.error || 'No flavors returned for the selected region.').show();
+        }
+      }, 'json').always(function() {
         btn.prop('disabled', false);
         $('#btn-save-flavors').prop('disabled', false);
         $('#flavors-loading').hide();
-        $('#flavors-error').text('Failed to fetch regions. Check server connectivity.').show();
       });
     });
 
@@ -2401,41 +2425,43 @@ function cloudpe_cmp_admin_render_additional(int $serverId, string $moduleUrl): 
 
     function esc(s) { return $('<span>').text(s).html(); }
 
-    $('#additional-loading').show();
-    var regionsReq  = $.post(moduleUrl, { action: 'load_regions',  server_id: serverId, service: 'vm' }, null, 'json');
-    var projectsReq = $.post(moduleUrl, { action: 'load_projects', server_id: serverId }, null, 'json');
+    function loadProjects() {
+      var regionId    = window.cmpRegionId || '';
+      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
+      $('#additional-loading').show();
+      $('#additional-error').hide();
 
-    $.when(regionsReq, projectsReq).done(function(rData, pData) {
-      $('#additional-loading').hide();
-      var regions  = (rData[0] && rData[0].success) ? (rData[0].regions  || []) : [];
-      var projects = (pData[0] && pData[0].success) ? (pData[0].projects || []) : [];
+      $.post(moduleUrl, { action: 'load_projects', server_id: serverId, region_id: regionId }, function(pData) {
+        $('#additional-loading').hide();
+        var projects = (pData && pData.success) ? (pData.projects || []) : [];
+        var $tbody = $('#projects-table tbody').empty();
 
-      var regionNames = {};
-      regions.forEach(function(r) { regionNames[r.id] = r.name || r.id; });
+        if (!projects.length) {
+          $tbody.append('<tr><td colspan="3" class="text-muted text-center">No projects found for this region.</td></tr>');
+          return;
+        }
 
-      var $tbody = $('#projects-table tbody').empty();
-
-      if (!projects.length) {
-        $tbody.append('<tr><td colspan="3" class="text-muted text-center">No projects found.</td></tr>');
-        return;
-      }
-
-      projects.forEach(function(p, i) {
-        var regionId   = p.region_id || '';
-        var regionName = regionNames[regionId] || regionId || '—';
-        var isChecked  = (p.id === defaultProject && regionId === defaultRegion);
-        $tbody.append(
-          '<tr data-project-id="' + esc(p.id) + '" data-region-id="' + esc(regionId) + '">' +
-          '<td><input type="radio" name="default_project" value="' + esc(p.id) + '"' + (isChecked ? ' checked' : '') + '></td>' +
-          '<td>' + esc(regionName) + '</td>' +
-          '<td>' + esc(p.name || p.id) + '</td>' +
-          '</tr>'
-        );
+        projects.forEach(function(p) {
+          var pRegionId   = p.region_id || regionId;
+          var pRegionName = window.cmpRegions[pRegionId] || pRegionId || regionLabel;
+          var isChecked   = (p.id === defaultProject && pRegionId === defaultRegion);
+          $tbody.append(
+            '<tr data-project-id="' + esc(p.id) + '" data-region-id="' + esc(pRegionId) + '">' +
+            '<td><input type="radio" name="default_project" value="' + esc(p.id) + '"' + (isChecked ? ' checked' : '') + '></td>' +
+            '<td>' + esc(pRegionName) + '</td>' +
+            '<td>' + esc(p.name || p.id) + '</td>' +
+            '</tr>'
+          );
+        });
+      }, 'json').fail(function() {
+        $('#additional-loading').hide();
+        $('#additional-error').text('Failed to load projects. Check server connectivity.').show();
       });
-    }).fail(function() {
-      $('#additional-loading').hide();
-      $('#additional-error').text('Failed to load projects. Check server connectivity.').show();
-    });
+    }
+
+    // Load after global regions are ready (ensures cmpRegionId is set), reload on region change
+    $(document).on('cmp:regions-loaded', loadProjects);
+    $('#cmp-region-select').on('change', loadProjects);
 
     $('#btn-save-additional').on('click', function() {
       var btn = $(this).prop('disabled', true);

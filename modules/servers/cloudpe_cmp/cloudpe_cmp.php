@@ -369,6 +369,30 @@ function cloudpe_cmp_TestConnection(array $params): array
 }
 
 // =========================================================================
+// Provisioning Helpers
+// =========================================================================
+
+/**
+ * Return $value only if it looks like a UUID; otherwise return ''.
+ * Guards against WHMCS loader-error placeholders (e.g. "error") or
+ * mis-mapped config option values being passed to the API as IDs.
+ */
+function cloudpe_cmp_sanitizeUuid(string $value): string
+{
+    return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value)
+        ? $value : '';
+}
+
+/**
+ * Return $value only if it is a non-empty, non-numeric string.
+ * Prevents a stray disk-size number from being sent as volume_type.
+ */
+function cloudpe_cmp_sanitizeVolumeType(string $value): string
+{
+    return ($value !== '' && !is_numeric($value)) ? $value : '';
+}
+
+// =========================================================================
 // Provisioning Functions
 // =========================================================================
 
@@ -383,22 +407,26 @@ function cloudpe_cmp_CreateAccount(array $params): string
         // Get config options
         $defaultFlavorId  = trim($params['configoption1'] ?? '');
         $defaultImageId   = trim($params['configoption2'] ?? '');
-        $billingPeriod    = $params['configoption3'] ?: 'monthly';
-        $securityGroupId  = trim($params['configoption4'] ?? '');
+        $billingPeriod    = in_array($params['configoption3'] ?? '', ['monthly', 'hourly'], true)
+                            ? $params['configoption3'] : 'monthly';
+        $securityGroupId  = cloudpe_cmp_sanitizeUuid(trim($params['configoption4'] ?? ''));
         $minVolumeSize    = (int)($params['configoption5'] ?? 30);
-        $volumeType       = trim($params['configoption6'] ?? '');
-        $projectOverride  = trim($params['configoption7'] ?? '');
+        if ($minVolumeSize < 1) $minVolumeSize = 30;
+        $volumeType       = cloudpe_cmp_sanitizeVolumeType(trim($params['configoption6'] ?? ''));
+        $projectOverride  = cloudpe_cmp_sanitizeUuid(trim($params['configoption7'] ?? ''));
         $defaultDiskSize  = (int)($params['configoption8'] ?? 0);
-        $networkId        = trim($params['configoption9'] ?? '');
-        $ipVersion        = $params['configoption10'] ?: 'ipv4';
+        $networkId        = cloudpe_cmp_sanitizeUuid(trim($params['configoption9'] ?? ''));
+        $ipVersion        = in_array($params['configoption10'] ?? '', ['ipv4', 'ipv6', 'both'], true)
+                            ? $params['configoption10'] : 'ipv4';
 
         // Project ID resolution: per-product override > admin default project > server-level Access Hash
         $serverId       = (int)($params['serverid'] ?? 0);
-        $defaultProject = trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_project'));
-        $defaultRegion  = trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_region'));
+        $defaultProject = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_project')));
+        $defaultRegion  = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_region')));
+        $flavorRegions  = cloudpe_cmp_getAdminSetting($serverId, 'flavor_regions') ?: [];
         $projectId = $projectOverride !== ''
             ? $projectOverride
-            : ($defaultProject !== '' ? $defaultProject : trim($params['serveraccesshash'] ?? ''));
+            : ($defaultProject !== '' ? $defaultProject : cloudpe_cmp_sanitizeUuid(trim($params['serveraccesshash'] ?? '')));
 
         // Get flavor from Configurable Options or default
         $flavorId = trim(
@@ -462,8 +490,13 @@ function cloudpe_cmp_CreateAccount(array $params): string
             $instanceData['network_id'] = $networkId;
         }
 
-        if (!empty($defaultRegion)) {
-            $instanceData['region_id'] = $defaultRegion;
+        // Region: flavor's saved region takes priority so the flavor is always
+        // submitted to the region it was validated against. Falls back to the
+        // admin default_region, then omits region_id entirely.
+        $flavorRegion  = cloudpe_cmp_sanitizeUuid(trim((string)($flavorRegions[$flavorId] ?? '')));
+        $effectiveRegion = $flavorRegion ?: $defaultRegion;
+        if (!empty($effectiveRegion)) {
+            $instanceData['region_id'] = $effectiveRegion;
         }
 
         if (!empty($ipVersion) && $ipVersion !== 'ipv4') {

@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.1-beta.3
+ * @version 1.1.1
  */
 
 class CloudPeCmpAPI
@@ -125,6 +125,18 @@ class CloudPeCmpAPI
 
             if (!empty($params['security_group_ids'])) {
                 $data['security_group_ids'] = (array)$params['security_group_ids'];
+            }
+
+            if (!empty($params['region_id'])) {
+                $data['region_id'] = $params['region_id'];
+            }
+
+            if (!empty($params['network_id'])) {
+                $data['network_id'] = $params['network_id'];
+            }
+
+            if (!empty($params['ip_version'])) {
+                $data['ip_version'] = $params['ip_version'];
             }
 
             $response = $this->apiRequest('/instances', 'POST', $data);
@@ -537,10 +549,14 @@ class CloudPeCmpAPI
      * The CMP API may expose this under /projects. We handle missing
      * endpoints gracefully so callers can fall back to manual config.
      */
-    public function listProjects(): array
+    public function listProjects(string $regionId = ''): array
     {
         try {
-            $response = $this->apiRequest('/projects', 'GET');
+            $url = '/projects';
+            if (!empty($regionId)) {
+                $url .= '?region_id=' . urlencode($regionId);
+            }
+            $response = $this->apiRequest($url, 'GET');
 
             if (!$response['success']) {
                 // Endpoint not available - return empty set so admins can

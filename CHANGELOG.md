@@ -2,6 +2,24 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.1.1] - 2026-04-22
+
+Stable release consolidating the `1.1.1-beta.x` series plus the provisioning hardening and region-scoped admin UX below.
+
+### Fixed
+- **Provisioning value sanitization** — UUID fields (security group, network, project override, access hash) now pass through a strict UUID regex before being sent to the API. This prevents WHMCS loader placeholders (e.g. `"error"`), mis-mapped config-option values, or leftover strings from being forwarded as IDs.
+- **`volume_type` leak** — a numeric value (disk size) could previously be passed as `volume_type` when config options were mis-mapped. Numeric values are now rejected by the sanitizer.
+- **Billing period / IP version validation** — `configoption3` (billing period) is now restricted to `monthly` or `hourly`; `configoption10` (IP version) to `ipv4`, `ipv6`, or `both`. Invalid values fall back to the defaults.
+- **Minimum volume size guard** — a non-positive `configoption5` falls back to 30 GB instead of being sent as-is.
+
+### Changed
+- **Region resolution priority** — when creating an instance, the flavor's saved `region_id` (from `flavor_regions`) now takes priority over the admin-level default region. Ensures a flavor is always provisioned to the region it was validated against.
+- **`createInstance` payload** — now forwards `region_id`, `network_id`, and `ip_version` when set.
+- **`listProjects`** — accepts an optional `regionId` parameter and appends `?region_id=…`. Admin-side also applies a client-side filter for APIs that ignore the query parameter.
+- **Global Server + Region selector** — Server and Region dropdowns are now rendered once at the top of the admin module and shared across all tabs via `window.cmpRegionId` / `window.cmpRegions` and a `cmp:regions-loaded` event. Switching region re-filters Images and Flavors tables and reloads Additional-tab projects.
+- **Images / Flavors "Load from API"** — fetch only the currently selected region's resources (previously iterated every region in sequence, which was slow and noisy). Re-clicking replaces the unsaved rows for that region.
+- **Row numbering** — `reNumber()` only counts visible rows after region filtering so ordinal numbers stay contiguous.
+
 ## [1.1.1-beta.9] - 2026-04-17
 
 ### Fixed
