@@ -9,9 +9,12 @@ class CloudPeCmpHelper
 {
     public function generateHostname(array $params): string
     {
-        $domain = $params['domain'] ?? '';
-        if (!empty($domain) && $domain !== 'cloudpe.local') {
-            return preg_replace('/[^a-zA-Z0-9\-]/', '', $domain);
+        $domain = trim((string)($params['domain'] ?? ''));
+        if ($domain !== '' && $domain !== 'cloudpe.local') {
+            // Pass the hostname through verbatim. Cart-side validation
+            // (cloudpe_cmp_ShoppingCartValidateCheckout) rejects invalid
+            // characters before we get here, so no silent mutation.
+            return $domain;
         }
 
         $clientId = $params['clientsdetails']['userid'] ?? $params['userid'] ?? rand(1000, 9999);

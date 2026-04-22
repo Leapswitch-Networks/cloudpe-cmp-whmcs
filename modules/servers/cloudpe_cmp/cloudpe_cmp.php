@@ -5,7 +5,7 @@
  * Provisions virtual machines on CloudPe CMP (FastAPI backend)
  * using API Key authentication.
  *
- * @version 1.0.4
+ * @version 1.2.0
  */
 
 if (!defined("WHMCS")) {
@@ -28,83 +28,43 @@ function cloudpe_cmp_MetaData(): array
 
 function cloudpe_cmp_ConfigOptions(): array
 {
-    // Product Module Settings -> Configuration
-    // We render these as WHMCS dropdowns so the admin can pick a default
-    // value for each order item directly. The Loader callbacks query the
-    // CMP API using the server credentials bound to the product.
+    // Module settings — per-product defaults for the createInstance payload.
+    // Any change to the VM creation API payload shape must be reflected here
+    // (see CLAUDE.md → "Module Settings ↔ createInstance").
     return [
+        // Type=text+Loader (not dropdown) so WHMCS Advanced mode shows a
+        // normal text input pre-filled with the stored id — same behaviour
+        // as cloudpe-whmcs. Dropdown types render empty text inputs in
+        // Advanced mode which confuses admins.
         'flavor' => [
             'FriendlyName' => 'Default Flavor',
-            'Type' => 'dropdown',
+            'Type' => 'text',
+            'Size' => 64,
             'Loader' => 'cloudpe_cmp_FlavorLoader',
             'SimpleMode' => true,
-            'Description' => 'Default VM size (can be overridden by a "Server Size" Configurable Option).',
+            'Description' => 'Default VM size. Overridable via a "Server Size" Configurable Option on the cart.',
         ],
         'image' => [
             'FriendlyName' => 'Default Image',
-            'Type' => 'dropdown',
+            'Type' => 'text',
+            'Size' => 64,
             'Loader' => 'cloudpe_cmp_ImageLoader',
             'SimpleMode' => true,
-            'Description' => 'Default OS image (can be overridden by an "Operating System" Configurable Option).',
-        ],
-        'billing_period' => [
-            'FriendlyName' => 'Billing Period',
-            'Type' => 'dropdown',
-            'Options' => 'monthly|Monthly,hourly|Hourly',
-            'Default' => 'monthly',
-            'SimpleMode' => true,
-            'Description' => 'Default billing period.',
-        ],
-        'security_group' => [
-            'FriendlyName' => 'Default Security Group',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_SecurityGroupLoader',
-            'SimpleMode' => true,
-            'Description' => 'Default firewall rules applied to the VM.',
-        ],
-        'min_volume_size' => [
-            'FriendlyName' => 'Minimum Volume Size (GB)',
-            'Type' => 'text',
-            'Size' => 10,
-            'Default' => '30',
-            'SimpleMode' => true,
-            'Description' => 'Minimum disk size in GB. Orders below this will be bumped up.',
-        ],
-        'volume_type' => [
-            'FriendlyName' => 'Storage Policy',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_VolumeTypeLoader',
-            'SimpleMode' => true,
-            'Description' => 'Volume type (e.g. General Purpose).',
-        ],
-        'project' => [
-            'FriendlyName' => 'Project',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_ProjectLoader',
-            'SimpleMode' => true,
-            'Description' => 'Project the VM is created under. Leave blank to use the server default (Access Hash).',
+            'Description' => 'Default OS image. Overridable via an "Operating System" Configurable Option on the cart.',
         ],
         'default_disk_size' => [
-            'FriendlyName' => 'Default Disk Size',
-            'Type' => 'dropdown',
+            'FriendlyName' => 'Default Disk Space',
+            'Type' => 'text',
+            'Size' => 10,
             'Loader' => 'cloudpe_cmp_DiskSizeLoader',
             'SimpleMode' => true,
-            'Description' => 'Default disk size when no "Disk Space" Configurable Option is selected.',
+            'Description' => 'Default boot-volume size in GB. Overridable via a "Disk Space" Configurable Option on the cart.',
         ],
-        'network' => [
-            'FriendlyName' => 'Network',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_NetworkLoader',
+        'hide_ns_prefix' => [
+            'FriendlyName' => 'Hide NS1 / NS2 Prefix',
+            'Type' => 'yesno',
             'SimpleMode' => true,
-            'Description' => 'Default network for the VM. Leave blank to use the project default.',
-        ],
-        'ip_version' => [
-            'FriendlyName' => 'IP Assignment',
-            'Type' => 'dropdown',
-            'Options' => 'ipv4|IPv4 Only,ipv6|IPv6 Only,both|Both IPv4 and IPv6',
-            'Default' => 'ipv4',
-            'SimpleMode' => true,
-            'Description' => 'IP version(s) to assign to the VM.',
+            'Description' => 'Tick to hide the NS1 Prefix and NS2 Prefix inputs on the cart Configure page (recommended for VM-only products where nameservers are not relevant). Leave unticked to show them.',
         ],
     ];
 }
@@ -205,125 +165,10 @@ function cloudpe_cmp_ImageLoader(array $params): array
     return ['error' => 'Failed to load images'];
 }
 
-function cloudpe_cmp_SecurityGroupLoader(array $params): array
-{
-    $serverId = (int)($params['serverid'] ?? 0);
-    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_security_groups');
-    $names    = cloudpe_cmp_getAdminSetting($serverId, 'security_group_names') ?: [];
-    if (is_array($selected) && !empty($selected)) {
-        $options = [];
-        foreach ($selected as $id) {
-            $options[$id] = $names[$id] ?? $id;
-        }
-        return $options;
-    }
-
-    try {
-        $api = new CloudPeCmpAPI($params);
-        $projectId = trim($params['serveraccesshash'] ?? '');
-        if (empty($projectId)) {
-            return ['error' => 'Project ID not configured (set Access Hash)'];
-        }
-        $result = $api->listSecurityGroups($projectId);
-        if ($result['success']) {
-            $options = [];
-            foreach ($result['security_groups'] as $sg) {
-                $options[$sg['id']] = $sg['name'] ?? $sg['id'];
-            }
-            return $options;
-        }
-    } catch (Exception $e) {}
-    return ['error' => 'Failed to load security groups'];
-}
-
-function cloudpe_cmp_VolumeTypeLoader(array $params): array
-{
-    $serverId = (int)($params['serverid'] ?? 0);
-    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_volume_types');
-    $names    = cloudpe_cmp_getAdminSetting($serverId, 'volume_type_names') ?: [];
-    if (is_array($selected) && !empty($selected)) {
-        $options = [];
-        foreach ($selected as $id) {
-            $options[$id] = $names[$id] ?? $id;
-        }
-        return $options;
-    }
-
-    try {
-        $api = new CloudPeCmpAPI($params);
-        $result = $api->listVolumeTypes();
-        if ($result['success']) {
-            $options = [];
-            foreach ($result['volume_types'] as $vt) {
-                $id   = $vt['id'] ?? $vt['name'] ?? '';
-                $name = $vt['name'] ?? $id;
-                if (!$id) continue;
-                $options[$id] = $name;
-            }
-            return $options;
-        }
-    } catch (Exception $e) {}
-    return ['error' => 'Failed to load volume types'];
-}
-
 /**
- * Project dropdown loader. Prefers admin-curated selection from the
- * CloudPe CMP Manager; otherwise falls back to a live /projects query.
- */
-function cloudpe_cmp_ProjectLoader(array $params): array
-{
-    $serverId = (int)($params['serverid'] ?? 0);
-    $selected = cloudpe_cmp_getAdminSetting($serverId, 'selected_projects');
-    $names    = cloudpe_cmp_getAdminSetting($serverId, 'project_names') ?: [];
-    if (is_array($selected) && !empty($selected)) {
-        $options = [];
-        foreach ($selected as $id) {
-            $options[$id] = $names[$id] ?? $id;
-        }
-        return $options;
-    }
-
-    try {
-        $api = new CloudPeCmpAPI($params);
-        $result = $api->listProjects();
-        if ($result['success']) {
-            $options = [];
-            foreach ($result['projects'] as $p) {
-                $id = $p['id'] ?? '';
-                if (!$id) continue;
-                $options[$id] = $p['name'] ?? $id;
-            }
-            if (!empty($options)) {
-                return $options;
-            }
-        }
-    } catch (Exception $e) {}
-    // Empty fallback - admin can leave blank and use server Access Hash
-    return ['' => '(use server default)'];
-}
-
-function cloudpe_cmp_NetworkLoader(array $params): array
-{
-    try {
-        $api = new CloudPeCmpAPI($params);
-        $result = $api->listNetworks();
-        if ($result['success']) {
-            $options = ['' => '(project default)'];
-            foreach ($result['networks'] as $net) {
-                $id = $net['id'] ?? '';
-                if (!$id) continue;
-                $options[$id] = $net['name'] ?? $net['display_name'] ?? $id;
-            }
-            return $options;
-        }
-    } catch (Exception $e) {}
-    return ['' => '(project default)'];
-}
-
-/**
- * Disk size dropdown loader. Sources sizes from the admin module's
- * saved Disk Sizes tab so the product config uses the same curated
- * list. Falls back to sensible defaults.
+ * Disk size dropdown loader. Sources sizes from the admin module's Disk
+ * Sizes tab so the product defaults match the curated list. Falls back to
+ * sensible defaults when nothing is saved yet.
  */
 function cloudpe_cmp_DiskSizeLoader(array $params): array
 {
@@ -383,15 +228,6 @@ function cloudpe_cmp_sanitizeUuid(string $value): string
         ? $value : '';
 }
 
-/**
- * Return $value only if it is a non-empty, non-numeric string.
- * Prevents a stray disk-size number from being sent as volume_type.
- */
-function cloudpe_cmp_sanitizeVolumeType(string $value): string
-{
-    return ($value !== '' && !is_numeric($value)) ? $value : '';
-}
-
 // =========================================================================
 // Provisioning Functions
 // =========================================================================
@@ -404,29 +240,22 @@ function cloudpe_cmp_CreateAccount(array $params): string
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $params, '', 'Starting VM creation');
 
-        // Get config options
-        $defaultFlavorId  = trim($params['configoption1'] ?? '');
-        $defaultImageId   = trim($params['configoption2'] ?? '');
-        $billingPeriod    = in_array($params['configoption3'] ?? '', ['monthly', 'hourly'], true)
-                            ? $params['configoption3'] : 'monthly';
-        $securityGroupId  = cloudpe_cmp_sanitizeUuid(trim($params['configoption4'] ?? ''));
-        $minVolumeSize    = (int)($params['configoption5'] ?? 30);
-        if ($minVolumeSize < 1) $minVolumeSize = 30;
-        $volumeType       = cloudpe_cmp_sanitizeVolumeType(trim($params['configoption6'] ?? ''));
-        $projectOverride  = cloudpe_cmp_sanitizeUuid(trim($params['configoption7'] ?? ''));
-        $defaultDiskSize  = (int)($params['configoption8'] ?? 0);
-        $networkId        = cloudpe_cmp_sanitizeUuid(trim($params['configoption9'] ?? ''));
-        $ipVersion        = in_array($params['configoption10'] ?? '', ['ipv4', 'ipv6', 'both'], true)
-                            ? $params['configoption10'] : 'ipv4';
+        // Config options — 1 flavor, 2 image, 3 network, 4 ip_version,
+        // 5 security_group, 6 min_volume_size.
+        // Module Settings (see cloudpe_cmp_ConfigOptions):
+        //   configoption1 → flavor, configoption2 → image, configoption3 → default_disk_size
+        $defaultFlavorId = trim($params['configoption1'] ?? '');
+        $defaultImageId  = trim($params['configoption2'] ?? '');
+        $defaultDiskSize = (int)($params['configoption3'] ?? 0);
+        // Hard floor to keep CMP happy. CMP-side default also applies if unset.
+        $minVolumeSize   = 30;
 
-        // Project ID resolution: per-product override > admin default project > server-level Access Hash
-        $serverId       = (int)($params['serverid'] ?? 0);
-        $defaultProject = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_project')));
-        $defaultRegion  = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_region')));
-        $flavorRegions  = cloudpe_cmp_getAdminSetting($serverId, 'flavor_regions') ?: [];
-        $projectId = $projectOverride !== ''
-            ? $projectOverride
-            : ($defaultProject !== '' ? $defaultProject : cloudpe_cmp_sanitizeUuid(trim($params['serveraccesshash'] ?? '')));
+        // Billing period is not admin-configurable here — default to monthly.
+        $billingPeriod = 'monthly';
+
+        // Project comes from the server's Access Hash (<region_id>/<project_uuid>).
+        $serverId  = (int)($params['serverid'] ?? 0);
+        $projectId = cloudpe_cmp_sanitizeUuid((string)$api->getProjectId());
 
         // Get flavor from Configurable Options or default
         $flavorId = trim(
@@ -444,7 +273,8 @@ function cloudpe_cmp_CreateAccount(array $params): string
             $defaultImageId
         );
 
-        // Get volume size: Configurable Options -> product default_disk_size -> min_volume_size
+        // Disk size: cart's "Disk Space" Configurable Option wins, else product
+        // Default Disk Space (configoption3), else hard floor.
         $volumeSize = (int)(
             $params['configoptions']['Disk Space']
             ?? $params['configoptions']['Volume Size']
@@ -452,7 +282,6 @@ function cloudpe_cmp_CreateAccount(array $params): string
             ?? $minVolumeSize
         );
         if ($volumeSize < $minVolumeSize) $volumeSize = $minVolumeSize;
-        if ($volumeSize < 30) $volumeSize = 30;
 
         // Validate
         if (empty($flavorId)) {
@@ -477,31 +306,9 @@ function cloudpe_cmp_CreateAccount(array $params): string
             'billing_period' => $billingPeriod,
         ];
 
-        if (!empty($volumeType)) {
-            $instanceData['volume_type'] = $volumeType;
-        }
-
-        if (!empty($securityGroupId)) {
-            // CMP accepts either a single ID or an array of IDs
-            $instanceData['security_group_ids'] = [$securityGroupId];
-        }
-
-        if (!empty($networkId)) {
-            $instanceData['network_id'] = $networkId;
-        }
-
-        // Region: flavor's saved region takes priority so the flavor is always
-        // submitted to the region it was validated against. Falls back to the
-        // admin default_region, then omits region_id entirely.
-        $flavorRegion  = cloudpe_cmp_sanitizeUuid(trim((string)($flavorRegions[$flavorId] ?? '')));
-        $effectiveRegion = $flavorRegion ?: $defaultRegion;
-        if (!empty($effectiveRegion)) {
-            $instanceData['region_id'] = $effectiveRegion;
-        }
-
-        if (!empty($ipVersion) && $ipVersion !== 'ipv4') {
-            $instanceData['ip_version'] = $ipVersion;
-        }
+        // region_id is auto-injected by CloudPeCmpAPI from the server's
+        // Access Hash (<region_id>/<project_uuid>). network_id, ip_version,
+        // and security_group_ids fall back to the CMP project's defaults.
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, '', 'Sending create request');
 
@@ -557,12 +364,22 @@ function cloudpe_cmp_CreateAccount(array $params): string
         cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv4', $ips['ipv4']);
         cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv6', $ips['ipv6']);
 
-        // Update service
+        // Fail loudly if CMP assigned a different name than we requested
+        // (e.g. silent collision suffix: "atul-test1" → "atul-test2").
+        // The admin/client must see that the requested hostname was not
+        // honored rather than discovering the mismatch later.
+        $actualHostname = trim((string)($vmData['name'] ?? $hostname));
+        if ($actualHostname !== '' && $actualHostname !== $hostname) {
+            logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, $vmData,
+                "Hostname mismatch: requested '{$hostname}', CMP assigned '{$actualHostname}'");
+            return "Hostname '{$hostname}' is already in use on CloudPe — CMP assigned '{$actualHostname}'. Please choose a different hostname.";
+        }
+
         $dedicatedIp = $ips['ipv4'] ?: $ips['ipv6'];
         Capsule::table('tblhosting')->where('id', $params['serviceid'])->update([
             'dedicatedip' => $dedicatedIp,
             'assignedips' => trim($ips['ipv4'] . "\n" . $ips['ipv6']),
-            'password' => encrypt($adminPassword),
+            'password'    => encrypt($adminPassword),
         ]);
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, ['instance_id' => $instanceId, 'ips' => $ips], 'Complete');
@@ -692,9 +509,9 @@ function cloudpe_cmp_ChangePackage(array $params): string
             $defaultFlavorId
         );
 
-        $minVolumeSize = (int)($params['configoption5'] ?? 30);
+        $minVolumeSize = 30;
         $newVolumeSize = (int)($params['configoptions']['Disk Space'] ?? $params['configoptions']['Volume Size'] ?? 0);
-        $projectId = trim($params['serveraccesshash'] ?? '');
+        $projectId = (string)$api->getProjectId();
 
         $results = [];
         $errors = [];
@@ -1251,32 +1068,44 @@ function cloudpe_cmp_ClientArea(array $params): array
         }
 
         $instance = $result['instance'];
-        $ipData = $instance['ip_addresses'] ?? $instance['addresses'] ?? [];
-        $ips = $helper->extractIPs($ipData);
-        $status = strtoupper($instance['status'] ?? 'Unknown');
+        $status   = strtoupper($instance['status'] ?? 'Unknown');
 
-        // Flavor details
-        $flavorName = 'Unknown';
-        $flavorVcpus = '-';
-        $flavorRam = '-';
-        $flavor = $instance['flavor'] ?? [];
-        if (is_array($flavor)) {
-            $flavorName = $flavor['name'] ?? 'Unknown';
-            $flavorVcpus = $flavor['vcpu'] ?? $flavor['vcpus'] ?? '-';
-            $flavorRam = $flavor['memory_gb'] ?? round(($flavor['ram'] ?? 0) / 1024, 1);
+        // IPs: CMP /instances/{id} returns a single 'ip_address' string for IPv4.
+        // Fall back to older shapes (ip_addresses / addresses) for compatibility.
+        $ipv4 = $instance['ip_address'] ?? '';
+        $ipv6 = '';
+        if ($ipv4 === '' || isset($instance['ip_addresses']) || isset($instance['addresses'])) {
+            $legacy = $helper->extractIPs($instance['ip_addresses'] ?? $instance['addresses'] ?? []);
+            if ($ipv4 === '') { $ipv4 = $legacy['ipv4']; }
+            $ipv6 = $legacy['ipv6'];
         }
 
-        // Image details
-        $imageName = 'Unknown';
-        $image = $instance['image'] ?? [];
-        if (is_array($image)) {
-            $imageName = $image['name'] ?? 'Unknown';
-        } elseif (is_string($image)) {
-            $imageName = $image;
+        // Flavor details — CMP returns flavor_name/vcpus/ram_mb as top-level fields
+        // (the nested 'flavor' key is now just a UUID string, not an object).
+        $flavorName  = $instance['flavor_name']
+                    ?? (is_array($instance['flavor'] ?? null) ? ($instance['flavor']['name'] ?? 'Unknown') : 'Unknown');
+        $flavorVcpus = $instance['vcpus']
+                    ?? (is_array($instance['flavor'] ?? null) ? ($instance['flavor']['vcpu'] ?? $instance['flavor']['vcpus'] ?? '-') : '-');
+        $flavorRam   = null;
+        if (isset($instance['ram_mb']) && (float)$instance['ram_mb'] > 0) {
+            $flavorRam = round((float)$instance['ram_mb'] / 1024, 1);
+        } elseif (is_array($instance['flavor'] ?? null)) {
+            $flavorRam = $instance['flavor']['memory_gb']
+                      ?? (isset($instance['flavor']['ram']) ? round((float)$instance['flavor']['ram'] / 1024, 1) : '-');
+        } else {
+            $flavorRam = '-';
         }
 
-        // Disk size
-        $diskSize = $instance['boot_volume_size_gb'] ?? '-';
+        // Image — CMP returns image_name as top-level field.
+        $imageName = $instance['image_name']
+                  ?? (is_array($instance['image'] ?? null) ? ($instance['image']['name'] ?? 'Unknown')
+                      : (is_string($instance['image'] ?? null) ? $instance['image'] : 'Unknown'));
+
+        // Disk size — CMP returns disk_gb; keep older boot_volume_size_gb as fallback.
+        $diskSize = $instance['disk_gb'] ?? $instance['boot_volume_size_gb'] ?? '-';
+
+        // Keep WHMCS's Primary IP and Assigned IPs fields in sync on every view.
+        cloudpe_cmp_syncIPs($params, $instance, $helper);
 
         $systemUrl = rtrim($GLOBALS['CONFIG']['SystemURL'] ?? '', '/');
 
@@ -1288,8 +1117,8 @@ function cloudpe_cmp_ClientArea(array $params): array
                 'status' => $status,
                 'status_label' => $helper->getStatusLabel($status),
                 'hostname' => $instance['name'] ?? '',
-                'ipv4' => $ips['ipv4'],
-                'ipv6' => $ips['ipv6'],
+                'ipv4' => $ipv4,
+                'ipv6' => $ipv6,
                 'created' => $instance['created_at'] ?? '',
                 'vcpus' => $flavorVcpus,
                 'ram' => $flavorRam,
@@ -1355,15 +1184,22 @@ function cloudpe_cmp_updateCustomField(int $serviceId, int $productId, string $f
  */
 function cloudpe_cmp_syncIPs(array $params, array $instance, CloudPeCmpHelper $helper): void
 {
-    $ipData = $instance['ip_addresses'] ?? $instance['addresses'] ?? [];
-    $ips = $helper->extractIPs($ipData);
+    // CMP returns a single ip_address string; fall back to older shapes.
+    $ipv4 = trim((string)($instance['ip_address'] ?? ''));
+    $ipv6 = '';
+    if ($ipv4 === '' || isset($instance['ip_addresses']) || isset($instance['addresses'])) {
+        $legacy = $helper->extractIPs($instance['ip_addresses'] ?? $instance['addresses'] ?? []);
+        if ($ipv4 === '') { $ipv4 = $legacy['ipv4']; }
+        $ipv6 = $legacy['ipv6'];
+    }
 
-    cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv4', $ips['ipv4']);
-    cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv6', $ips['ipv6']);
+    cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv4', $ipv4);
+    cloudpe_cmp_updateCustomField($params['serviceid'], $params['pid'], 'Public IPv6', $ipv6);
 
-    $dedicatedIp = $ips['ipv4'] ?: $ips['ipv6'];
+    $dedicatedIp = $ipv4 ?: $ipv6;
+    $assignedIps = trim($ipv4 . ($ipv6 !== '' ? "\n" . $ipv6 : ''));
     Capsule::table('tblhosting')->where('id', $params['serviceid'])->update([
         'dedicatedip' => $dedicatedIp,
-        'assignedips' => trim($ips['ipv4'] . "\n" . $ips['ipv6']),
+        'assignedips' => $assignedIps,
     ]);
 }

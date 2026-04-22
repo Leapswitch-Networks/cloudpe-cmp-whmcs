@@ -2,6 +2,71 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.2.0] - 2026-04-23
+
+Consolidates the v1.2.0-beta.1 work plus the client-area, admin UX, config-group, pricing, and cart-validation refinements below.
+
+### Added
+- **Reset Password modal** on the client area — user-supplied password with Generate helper and show/hide eye toggle (password hidden by default); live requirements checklist with ✓/✕ icons; policy enforced both client-side and in `ajax.php` (12+ chars, upper, lower, digit, special).
+- **Per-currency pricing columns** (`USD /mo`, `INR /mo`) on Images, Flavors, and Disk Sizes tabs; other WHMCS currencies filtered out of admin UI.
+- **Inline price-change icon + banner** on the Flavors tab — when the CMP API returns `price_monthly_inr` / `price_monthly_usd` different from the saved price, an apply-icon appears beside the input and a banner above the table lists all diffs.
+- **Config Groups rewrite** — product link checklist (Select All / None), Include Options toggles (OS / Size / Disk), billing-cycle multipliers, `Repair Data` action that sanitises Unicode smart quotes in `mod_cloudpe_cmp_settings`.
+- **Hide NS1 / NS2 Prefix** per-product Module Setting (`configoption4`) — tick to hide the NS prefix inputs on the cart Configure page for VM-only products.
+- **Cart hostname validation** — RFC 1123 labels (letters / digits / hyphens, no leading or trailing hyphen), up to 253 chars total. Blocks on the order form with a clear message; hostnames are passed through to CMP verbatim (no silent mutation like `vm-20260423.testing.com` → `vm-20260423testingcom`).
+- **Cart root-password policy** — live hint box under the Root Password field (shown when focused, or when blurred with invalid content); submission blocked both client-side and via `ShoppingCartValidateCheckout`.
+- **Collision-suffix guard** — if CMP returns a name different from the requested hostname (e.g. `atul-test1` → `atul-test2`), provisioning fails loudly with an actionable error instead of silently renaming the WHMCS service.
+
+### Changed
+- **Existing Configurable Option Groups** table — full-row click opens the edit page; Edit button removed in favour of row click; View All link in the panel heading.
+- **Disk Sizes toolbar** moved to the top (Add Disk Option + Save Disk Sizes inline), matching the Images/Flavors pattern.
+- **Dashboard** drops the `Module Version` row; `SSL` renamed to `Secure` (`Yes (HTTPS)` / `No (HTTP)`).
+- **Images loader** filters to `is_active = true AND group_id IS NOT NULL`; values use `openstack_id` (matches `reference/cloudpe-cmp-create-vm.php`). Exposes `group_name`.
+- **Flavors loader** values use `openstack_id`; exposes `flavor_group_name`, `price_monthly_inr`, `price_monthly_usd`.
+- **Client area overview template** now maps the v1 API response — `image_name`, `flavor_name`, `vcpus`, `ram_mb`, `disk_gb`, `ip_address` — instead of the old nested objects. `Plan` renamed to `Flavor`.
+- **Module Settings** pared to the fields actually used by `createInstance`: Default Flavor, Default Image, Default Disk Space, Hide NS1/NS2 Prefix. Network / Security Group / IP Assignment / Volume Type / Storage Policy dropped (sourced from project defaults instead).
+- **Provisioning**: `syncIPs()` rewritten for the new singular `ip_address` field and is now invoked on every client-area view, keeping WHMCS's Primary IP and Assigned IPs current.
+
+### Removed
+- **Additional tab** — default project setting removed; the server's Access Hash project is authoritative.
+- **Troubleshoot tab** — diagnostic dump removed now that pricing / cart issues are resolved.
+
+## [1.2.0-beta.1] - 2026-04-22
+
+**Breaking change:** Access Hash format changed from a bare project UUID to `<region_id>/<project_uuid>`. Each WHMCS server is now bound to exactly one CMP region.
+
+### Migration
+
+For each existing CloudPe CMP server in **Setup → Products/Services → Servers**, update Access Hash from:
+
+```
+3f1c0a2e-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+to:
+
+```
+mumbai-dc2/3f1c0a2e-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+To offer multiple regions, create one server per region. Legacy bare-UUID values still parse as project-only and keep working, but the backend will no longer scope to any region — provisioning may fail if your org spans multiple regions.
+
+### Added
+- `CloudPeCmpAPI::getRegionId()` / `getProjectId()` accessors expose the server-bound values parsed from Access Hash.
+- Test Connection now verifies the configured region exists on the CMP backend and returns the resolved region + project in the success message.
+
+### Changed
+- `CloudPeCmpAPI::__construct()` parses Access Hash on `/` into `regionId` and `projectId`.
+- `listFlavors`, `listImages`, `listProjects`, `listVolumeTypes`, `listSecurityGroups`, `listFlavorGroups`, and `createInstance` auto-inject `region_id` from the server's Access Hash when no explicit region is passed.
+- Provisioning: region is no longer resolved per flavor. The admin-level `default_region` setting and per-flavor `flavor_regions` mapping have been removed; the API client handles it centrally.
+- Admin module: the global Region dropdown is gone. The Server selector is the sole scope control — each server is one region.
+
+### Removed
+- Global `#cmp-region-select` dropdown, `window.cmpRegionId` / `window.cmpRegions`, `cmp:regions-loaded` event, `cmpFilterTablesByRegion()`.
+- Per-row Region columns and `data-region` attributes on Images / Flavors / Projects tables.
+- Settings: `image_regions`, `flavor_regions`, `project_regions`, `default_region`, `selected_regions`, `region_names` (existing rows become dead weight — no migration added; they're ignored).
+- AJAX handlers: `load_regions`, `save_project_regions`, `save_selected_regions`, `save_image_regions`, `save_flavor_regions`. `save_default_region_project` renamed to `save_default_project`.
+- `cloudpe_cmp_admin_load_regions()` function.
+
 ## [1.1.1] - 2026-04-22
 
 Stable release consolidating the `1.1.1-beta.x` series plus the provisioning hardening and region-scoped admin UX below.

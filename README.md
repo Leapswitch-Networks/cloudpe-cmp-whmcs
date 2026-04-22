@@ -8,10 +8,10 @@ A comprehensive WHMCS provisioning module for CloudPe CMP (Cloud Management Plat
 - **Customer Self-Service**: Start, stop, restart VMs and access VNC console
 - **Console Sharing**: Generate shareable console access links with expiry
 - **Boot Log Viewer**: View VM boot logs from the client area
-- **Dynamic Resource Loading**: Fetch flavors, images, regions, and volume types from CMP API
+- **Dynamic Resource Loading**: Fetch flavors, images, and volume types from CMP API
 - **Configurable Options**: Auto-generate WHMCS configurable options from CMP resources
 - **Auto-Updates**: Automatic update checking and one-click installation
-- **Multi-Region Support**: Support for multiple regions with region-based filtering
+- **Multi-Region Support**: One WHMCS server per CMP region; region is encoded in the server's Access Hash
 - **Billing Period**: Support for hourly and monthly billing periods
 - **API Key Authentication**: Simple and secure Bearer token authentication
 
@@ -48,15 +48,26 @@ rm -rf temp_cloudpe_cmp
 1. Go to **Setup -> Products/Services -> Servers**
 2. Click **Add New Server**
 3. Configure:
-   - **Name**: CloudPe CMP (or your preferred name)
+   - **Name**: CloudPe CMP — <Region> (e.g., `CloudPe CMP — Mumbai DC2`)
    - **Hostname**: Your CMP hostname (e.g., `app.cloudpe.com`)
    - **Username**: (optional - email for reference)
    - **Password**: API Key from CMP
-   - **Access Hash**: Project ID (UUID)
+   - **Access Hash**: `<region_id>/<project_uuid>` — see **Multi-Region Setup** below
    - **Type**: CloudPe CMP
    - **Secure**: checked (HTTPS)
 
-4. Click **Test Connection** to verify
+4. Click **Test Connection** to verify. The test also checks that the region in Access Hash exists on the CMP backend.
+
+### Multi-Region Setup
+
+Each WHMCS server binds to **one** CMP region. To offer multiple regions (e.g. Mumbai DC2 and Mumbai DC3), create one server per region and encode the region + project UUID in the Access Hash:
+
+| Region | Access Hash example |
+|--------|---------------------|
+| Mumbai DC2 | `mumbai-dc2/3f1c0a2e-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| Mumbai DC3 | `mumbai-dc3/7b9d2f45-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+
+The module parses Access Hash at runtime, stores the project UUID, and auto-injects `region_id` into every list/create API call. If you paste a bare UUID with no slash (legacy v1.1 and earlier), it is treated as the project UUID and region is omitted.
 
 ### Getting Your API Key
 
@@ -72,13 +83,14 @@ rm -rf temp_cloudpe_cmp
 2. Go to **Module Settings** tab
 3. Select **CloudPe CMP** as the module
 4. Configure:
-   - **Flavor**: Select VM size
-   - **Default Image**: Select OS image
-   - **Region**: Select deployment region
+   - **Flavor**: Select VM size (scoped to the server's region)
+   - **Default Image**: Select OS image (scoped to the server's region)
    - **Billing Period**: Monthly or Hourly
    - **Security Group**: (optional)
    - **Min Volume Size**: Minimum disk in GB (default: 30)
    - **Storage Policy**: Volume type
+
+   Region is **not** a per-product option — it comes from the server's Access Hash. Bind the product to the server whose region you want.
 
 ### Custom Fields Setup
 
@@ -97,10 +109,12 @@ For each CloudPe CMP product, create 3 custom fields:
 Access via **Addons -> CloudPe CMP Manager**:
 
 - **Dashboard**: Server info and connection test
-- **Images Tab**: Load and select OS images, set display names and prices
-- **Flavors Tab**: Load and select VM sizes, set display names and prices
+- **Server selector**: Pick which server (region) to manage — each server is one region
+- **Images Tab**: Load and select OS images for the selected server's region, set display names and prices
+- **Flavors Tab**: Load and select VM sizes for the selected server's region, set display names and prices
 - **Disk Sizes Tab**: Configure disk options with pricing
 - **Create Config Group**: Auto-generate WHMCS configurable options
+- **Additional Tab**: Pick the default project for the selected server
 - **Updates Tab**: Check for and install module updates
 
 ## File Structure
@@ -156,11 +170,14 @@ The CloudPeCmpAPI class provides these methods:
 - `revokeConsoleShare($id, $shareId)` - Revoke share link
 
 ### Resources
-- `listFlavors($region)` - List available flavors
-- `listImages($region)` - List available images
+All resource listings auto-scope to the region from the server's Access Hash unless an explicit region is passed.
+- `listFlavors($includeGpu, $region)` - List available flavors
+- `listImages($osDistro, $region)` - List available images
 - `listRegions($service)` - List available regions
+- `listProjects($region)` - List projects available to the API key
 - `listSecurityGroups($projectId, $region)` - List security groups
 - `listVolumeTypes($region)` - List volume types
+- `getProjectId()` / `getRegionId()` - Accessors for the server-bound project and region
 
 ### Volumes
 - `getVolume($id)` - Get volume details
@@ -193,8 +210,8 @@ The CloudPeCmpAPI class provides these methods:
 - Try the CMP API docs directly: `https://{hostname}/api/docs`
 
 ### VM Creation Fails
-- Check all required fields: flavor, image, region, project ID
-- Verify Project ID is set in Access Hash field
+- Check all required fields: flavor, image, project ID
+- Verify Access Hash is set to `<region_id>/<project_uuid>` on the bound server
 - Review module logs for detailed error messages
 
 ## Contributing

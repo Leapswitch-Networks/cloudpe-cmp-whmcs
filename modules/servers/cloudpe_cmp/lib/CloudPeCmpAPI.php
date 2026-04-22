@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.1
+ * @version 1.2.0
  */
 
 class CloudPeCmpAPI
@@ -15,6 +15,8 @@ class CloudPeCmpAPI
     private $apiKey;
     private $timeout = 60;
     private $sslVerify = true;
+    private $regionId = '';
+    private $projectId = '';
 
     /**
      * Constructor - Initialize API client with WHMCS server params
@@ -23,7 +25,10 @@ class CloudPeCmpAPI
      * - serverhostname: CMP hostname (e.g., app.cloudpe.com)
      * - serverpassword: API Key from CMP
      * - serversecure: SSL verification (on/off)
-     * - serveraccesshash: Project ID (UUID)
+     * - serveraccesshash: "<region_id>/<project_uuid>" (v1.2+) or bare "<project_uuid>" (legacy)
+     *
+     * Each WHMCS server is bound to exactly one CMP region. The region_id
+     * is encoded in Access Hash so every list/create call is scoped to it.
      */
     public function __construct(array $params)
     {
@@ -45,14 +50,33 @@ class CloudPeCmpAPI
         if (strpos($this->serverUrl, '/api/v1') === false) {
             $this->serverUrl .= '/api/v1';
         }
+
+        // Parse Access Hash as "<region_id>/<project_uuid>". Legacy values
+        // without a slash are treated as a bare project UUID.
+        $accessHash = trim($params['serveraccesshash'] ?? '');
+        if ($accessHash !== '' && strpos($accessHash, '/') !== false) {
+            [$region, $project] = array_pad(explode('/', $accessHash, 2), 2, '');
+            $this->regionId  = trim($region);
+            $this->projectId = trim($project);
+        } else {
+            $this->projectId = $accessHash;
+        }
     }
 
     /**
-     * Get the project ID from WHMCS server access hash
+     * Get the project UUID parsed from the server Access Hash.
      */
     public function getProjectId(array $params = []): ?string
     {
-        return trim($params['serveraccesshash'] ?? '') ?: null;
+        return $this->projectId !== '' ? $this->projectId : null;
+    }
+
+    /**
+     * Get the region ID parsed from the server Access Hash.
+     */
+    public function getRegionId(): string
+    {
+        return $this->regionId;
     }
 
     // =========================================================================
@@ -67,14 +91,41 @@ class CloudPeCmpAPI
         try {
             $response = $this->apiRequest('/flavors', 'GET');
 
-            if ($response['success']) {
-                return [
-                    'success' => true,
-                    'message' => 'Connected successfully to CloudPe CMP API.',
-                ];
+            if (!$response['success']) {
+                return ['success' => false, 'error' => $response['error'] ?? 'Failed to connect'];
             }
 
-            return ['success' => false, 'error' => $response['error'] ?? 'Failed to connect'];
+            // Verify that the configured region (from Access Hash) actually
+            // exists so misconfigured servers fail loud at Test Connection
+            // instead of silently at provision time.
+            $regionLabel = '';
+            if ($this->regionId !== '') {
+                $regions = $this->listRegions();
+                if (!$regions['success']) {
+                    return ['success' => false, 'error' => 'Region lookup failed: ' . ($regions['error'] ?? '')];
+                }
+                $found = null;
+                foreach ($regions['regions'] as $r) {
+                    if (($r['id'] ?? '') === $this->regionId || ($r['slug'] ?? '') === $this->regionId) {
+                        $found = $r;
+                        break;
+                    }
+                }
+                if (!$found) {
+                    return ['success' => false, 'error' => "Region '{$this->regionId}' from Access Hash not found on server."];
+                }
+                $regionLabel = $found['name'] ?? $found['display_name'] ?? $this->regionId;
+            }
+
+            $msg = 'Connected successfully to CloudPe CMP API.';
+            if ($regionLabel !== '') {
+                $msg .= " Region: {$regionLabel}.";
+            }
+            if ($this->projectId !== '') {
+                $msg .= " Project: {$this->projectId}.";
+            }
+
+            return ['success' => true, 'message' => $msg];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }
@@ -127,8 +178,10 @@ class CloudPeCmpAPI
                 $data['security_group_ids'] = (array)$params['security_group_ids'];
             }
 
-            if (!empty($params['region_id'])) {
-                $data['region_id'] = $params['region_id'];
+            // region_id: explicit param wins, else server's bound region
+            $regionId = !empty($params['region_id']) ? $params['region_id'] : $this->regionId;
+            if (!empty($regionId)) {
+                $data['region_id'] = $regionId;
             }
 
             if (!empty($params['network_id'])) {
@@ -552,6 +605,7 @@ class CloudPeCmpAPI
     public function listProjects(string $regionId = ''): array
     {
         try {
+            $regionId = $regionId !== '' ? $regionId : $this->regionId;
             $url = '/projects';
             if (!empty($regionId)) {
                 $url .= '?region_id=' . urlencode($regionId);
@@ -585,6 +639,7 @@ class CloudPeCmpAPI
     public function listFlavors(bool $includeGpu = false, string $regionId = ''): array
     {
         try {
+            $regionId = $regionId !== '' ? $regionId : $this->regionId;
             $params = [];
             if ($includeGpu) {
                 $params['include_gpu'] = 'true';
@@ -624,6 +679,7 @@ class CloudPeCmpAPI
     public function listImages(string $osDistro = '', string $regionId = ''): array
     {
         try {
+            $regionId = $regionId !== '' ? $regionId : $this->regionId;
             $params = [];
             if (!empty($osDistro)) {
                 $params['os_distro'] = $osDistro;
@@ -688,9 +744,11 @@ class CloudPeCmpAPI
      * @param string $projectId Project UUID (required by API)
      * @param string $regionId  Optional region ID / slug
      */
-    public function listSecurityGroups(string $projectId, string $regionId = ''): array
+    public function listSecurityGroups(string $projectId = '', string $regionId = ''): array
     {
         try {
+            $projectId = $projectId !== '' ? $projectId : $this->projectId;
+            $regionId  = $regionId  !== '' ? $regionId  : $this->regionId;
             $params = ['project_id' => $projectId];
             if (!empty($regionId)) {
                 $params['region'] = $regionId;
@@ -724,6 +782,7 @@ class CloudPeCmpAPI
     public function listVolumeTypes(string $regionId = ''): array
     {
         try {
+            $regionId = $regionId !== '' ? $regionId : $this->regionId;
             $params = [];
             if (!empty($regionId)) {
                 $params['region'] = $regionId;
@@ -759,6 +818,7 @@ class CloudPeCmpAPI
     public function listFlavorGroups(string $regionId = ''): array
     {
         try {
+            $regionId = $regionId !== '' ? $regionId : $this->regionId;
             $params = [];
             if (!empty($regionId)) {
                 $params['region_id'] = $regionId;

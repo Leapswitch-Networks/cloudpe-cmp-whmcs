@@ -42,13 +42,24 @@ This is the CloudPe CMP WHMCS Module. It enables WHMCS resellers to provision an
 
 **Key difference from cloudpe-whmcs**: This module integrates with CloudPe's own FastAPI platform (`/api/v1/*`) using API Key authentication, NOT with Virtuozzo/OpenStack.
 
+## CloudPe CMP API Reference (authoritative)
+
+Always consult these first when adding or modifying any CMP API call:
+
+- **Swagger UI / docs**: https://app.cloudpe.com/api/docs
+- **OpenAPI schema**: https://app.cloudpe.com/api/openapi.json
+- **Backend source (GitHub)**: https://github.com/Leapswitch-Networks/cloudpe-cmp — use this when the docs are ambiguous, the endpoint isn't in the OpenAPI yet, or you need to understand request/response validation and exact field semantics.
+
+If a local `/home/atul/Documents/Projects/documentation/cloudpe/` folder exists, read that too — otherwise fetch the OpenAPI JSON at session start when doing API work. For deeper questions (validation rules, enum values, field shape changes), grep the `Leapswitch-Networks/cloudpe-cmp` repo via `gh` or clone it locally.
+
 ## Key Architecture
 
 ### Authentication
 
 - Uses API Key (Bearer token) authentication
 - API Key is stored in the WHMCS server Password field
-- Project ID is stored in the Access Hash field
+- **Access Hash format (v1.2+)**: `<region_id>/<project_uuid>` — each WHMCS server is bound to exactly one CMP region. Legacy bare-UUID values parse as project-only (region omitted)
+- `CloudPeCmpAPI::__construct()` splits Access Hash on `/` and exposes `getRegionId()` / `getProjectId()`. Every list/create call auto-injects the server's `region_id` when none is passed explicitly
 - Base URL: `https://{hostname}/api/v1`
 
 ### File Structure
@@ -93,6 +104,28 @@ After construction, API endpoints are relative to `/api/v1`:
 - Security Groups: `/security-groups`
 - Console: `/instances/{id}/console`, `/instances/{id}/console/share`
 - Billing: `/billing/estimate`
+
+## Module Settings ↔ createInstance (invariant)
+
+`cloudpe_cmp_ConfigOptions()` declares the per-product defaults surfaced on **Setup → Products/Services → Edit → Module Settings**. These values are what `CreateAccount` reads (as `$params['configoptionN']`) and places into the CMP `POST /instances` (createInstance) payload.
+
+**Rule**: any change to the createInstance payload shape — adding a field, renaming one, dropping one — must be reflected in `ConfigOptions()`. Keep the two in lock-step:
+
+| Module Setting dropdown | `$params` key | createInstance payload field |
+|---|---|---|
+| Default Flavor | `configoption1` | `flavor` |
+| Default Image | `configoption2` | `image` |
+| Default Disk Space | `configoption3` | `boot_volume_size_gb` (floor, or via "Disk Space" Configurable Option) |
+| Hide NS1 / NS2 Prefix | `configoption4` | _not sent to CMP_ — Type=yesno checkbox. `on` = hide NS fields on cart (driven by `hooks.php`); empty = show. |
+
+Other createInstance fields (`region_id`, `project_id`, `network_id`, `ip_version`, `security_group_ids`, `billing_period`, `volume_type`) either come from the server's Access Hash, the CMP project defaults, or are hard-coded — not from Module Settings.
+
+When adding a new payload field that admins should be able to default per-product:
+1. Add a new entry to `cloudpe_cmp_ConfigOptions()` (dropdown + Loader if the values are enumerable).
+2. Read it in `cloudpe_cmp_CreateAccount()` as `$params['configoption<N>']`.
+3. Add it to `$instanceData` passed to `$api->createInstance()`.
+4. Update the table above and note the shift in any existing configoption numbers.
+5. Also handle it in `cloudpe_cmp_ChangePackage()` if it can change on upgrade.
 
 ## Common Tasks
 

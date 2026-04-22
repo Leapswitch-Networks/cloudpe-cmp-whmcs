@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.2.0');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -544,6 +544,32 @@ function cloudpe_cmp_admin_cleanup_temp(string $dir): void
  * @param string $key      Setting key
  * @param mixed  $value    Value (arrays will be JSON-encoded)
  */
+/**
+ * Sanitize HTML entities and Unicode quote variants so JSON-encoded settings
+ * don't end up with curly/smart quotes that break json_decode().
+ */
+function cloudpe_cmp_admin_sanitize_quotes(?string $value): ?string
+{
+  if ($value === null || $value === '') {
+    return $value;
+  }
+  $value = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+  $doubleQuotes = [
+    "\xE2\x80\x9C", "\xE2\x80\x9D", "\xE2\x80\x9E", "\xE2\x80\x9F",
+    "\xE2\x80\xB3", "\xE2\x80\xB6", "\xEF\xBC\x82",
+    "\xC2\xAB", "\xC2\xBB",
+  ];
+  $singleQuotes = [
+    "\xE2\x80\x98", "\xE2\x80\x99", "\xE2\x80\x9A", "\xE2\x80\x9B",
+    "\xE2\x80\xB2", "\xE2\x80\xB5", "\xEF\xBC\x87",
+    "\xE2\x80\xB9", "\xE2\x80\xBA",
+    "\xC2\x91", "\xC2\x92",
+  ];
+  $value = str_replace($doubleQuotes, '"', $value);
+  $value = str_replace($singleQuotes, "'", $value);
+  return $value;
+}
+
 function cloudpe_cmp_admin_save_setting(int $serverId, string $key, $value): void
 {
   if (is_array($value) || is_object($value)) {
@@ -589,7 +615,7 @@ function cloudpe_cmp_admin_get_setting(int $serverId, string $key, $default = nu
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), images (array)|error (string)
  */
-function cloudpe_cmp_admin_load_images(int $serverId, string $regionId = ''): array
+function cloudpe_cmp_admin_load_images(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -611,7 +637,7 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $regionId = ''): ar
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listImages('', $regionId);
+    $result = $api->listImages();
 
     if (!$result['success']) {
       $msg = $result['error'] ?? 'Failed to load images.';
@@ -621,27 +647,27 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $regionId = ''): ar
       return ['success' => false, 'error' => $msg];
     }
 
+    // Match reference/cloudpe-cmp-create-vm.php filter:
+    //   keep images where group_id is set AND is_active === true
+    // Value is openstack_id (what create_instance resolves by), grouped by group_name.
     $images = [];
     foreach ((array)($result['images'] ?? []) as $img) {
-      $id = $img['id'] ?? $img['slug'] ?? '';
-      // Prefer a human-readable label over raw API name (which may be a UUID).
-      $name = $img['display_name']
+      if (empty($img['group_id']) || ($img['is_active'] ?? false) !== true) {
+        continue;
+      }
+      $id = $img['openstack_id'] ?? $img['slug'] ?? $img['id'] ?? '';
+      if ($id === '') continue;
+      $name = $img['name']
+           ?? $img['display_name']
            ?? $img['os_name']
            ?? $img['label']
            ?? $img['title']
-           ?? null;
-      // If still unset, try composing from os_distro + os_version.
-      if (!$name && !empty($img['os_distro'])) {
-        $name = ucfirst($img['os_distro']);
-        if (!empty($img['os_version'])) {
-          $name .= ' ' . $img['os_version'];
-        }
-      }
-      // Last resort: use the API name field (may be UUID) or the ID itself.
-      if (!$name || $name === $id) {
-        $name = $img['name'] ?? $id;
-      }
-      $images[] = ['id' => $id, 'name' => $name];
+           ?? $id;
+      $images[] = [
+        'id'         => $id,
+        'name'       => $name,
+        'group_name' => $img['group_name'] ?? '',
+      ];
     }
 
     return ['success' => true, 'images' => $images];
@@ -656,7 +682,7 @@ function cloudpe_cmp_admin_load_images(int $serverId, string $regionId = ''): ar
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), flavors (array)|error (string)
  */
-function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): array
+function cloudpe_cmp_admin_load_flavors(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -678,7 +704,7 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): a
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listFlavors(false, $regionId);
+    $result = $api->listFlavors(false);
 
     if (!$result['success']) {
       $msg = $result['error'] ?? 'Failed to load flavors.';
@@ -688,12 +714,12 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): a
       return ['success' => false, 'error' => $msg];
     }
 
+    // Match reference/cloudpe-cmp-create-vm.php:
+    //   value = openstack_id (what create_instance resolves by), grouped by flavor_group_name.
     $flavors = [];
     foreach ((array)($result['flavors'] ?? []) as $flv) {
-      $id = $flv['id'] ?? $flv['slug'] ?? '';
-      // RAM: CMP API commonly returns MB (`ram`, `ram_mb`, `memory_mb`).
-      // Some responses use `memory_gb`/`ram_gb`. Prefer MB→GB conversion,
-      // fall back to GB fields if no MB source is present.
+      $id = $flv['openstack_id'] ?? $flv['slug'] ?? $flv['id'] ?? '';
+      if ($id === '') continue;
       $ramMb = $flv['ram_mb'] ?? $flv['memory_mb'] ?? $flv['ram'] ?? null;
       $ramGb = $flv['memory_gb'] ?? $flv['ram_gb'] ?? $flv['memory'] ?? null;
       $memoryGb = 0;
@@ -703,10 +729,13 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): a
         $memoryGb = (float)$ramGb;
       }
       $flavors[] = [
-        'id'        => $id,
-        'name'      => $flv['name'] ?? $flv['display_name'] ?? $id,
-        'vcpu'      => (int)($flv['vcpus'] ?? $flv['vcpu'] ?? $flv['cpu'] ?? 0),
-        'memory_gb' => $memoryGb,
+        'id'                 => $id,
+        'name'               => $flv['name'] ?? $flv['display_name'] ?? $id,
+        'vcpu'               => (int)($flv['vcpus'] ?? $flv['vcpu'] ?? $flv['cpu'] ?? 0),
+        'memory_gb'          => $memoryGb,
+        'group_name'         => $flv['flavor_group_name'] ?? $flv['group_name'] ?? '',
+        'price_monthly_inr'  => isset($flv['price_monthly_inr']) ? (float)$flv['price_monthly_inr'] : null,
+        'price_monthly_usd'  => isset($flv['price_monthly_usd']) ? (float)$flv['price_monthly_usd'] : null,
       ];
     }
 
@@ -722,7 +751,7 @@ function cloudpe_cmp_admin_load_flavors(int $serverId, string $regionId = ''): a
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), projects (array)|error (string)
  */
-function cloudpe_cmp_admin_load_projects(int $serverId, string $regionId = ''): array
+function cloudpe_cmp_admin_load_projects(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -744,7 +773,7 @@ function cloudpe_cmp_admin_load_projects(int $serverId, string $regionId = ''): 
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listProjects($regionId);
+    $result = $api->listProjects();
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load projects.'];
@@ -752,16 +781,9 @@ function cloudpe_cmp_admin_load_projects(int $serverId, string $regionId = ''): 
 
     $projects = [];
     foreach ((array)($result['projects'] ?? []) as $proj) {
-      $projRegion = $proj['region_id'] ?? $proj['region'] ?? '';
-      // Client-side filter: if a region was requested and the project has a
-      // region field, only include projects that match.
-      if ($regionId !== '' && $projRegion !== '' && $projRegion !== $regionId) {
-        continue;
-      }
       $projects[] = [
-        'id'        => $proj['id'] ?? $proj['uuid'] ?? '',
-        'name'      => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
-        'region_id' => $projRegion,
+        'id'   => $proj['id'] ?? $proj['uuid'] ?? '',
+        'name' => $proj['name'] ?? $proj['display_name'] ?? $proj['id'] ?? '',
       ];
     }
 
@@ -781,7 +803,7 @@ function cloudpe_cmp_admin_load_projects(int $serverId, string $regionId = ''): 
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), security_groups (array)|error (string)
  */
-function cloudpe_cmp_admin_load_security_groups(int $serverId, string $projectId = '', string $regionId = ''): array
+function cloudpe_cmp_admin_load_security_groups(int $serverId, string $projectId = ''): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -811,7 +833,7 @@ function cloudpe_cmp_admin_load_security_groups(int $serverId, string $projectId
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listSecurityGroups($projectId, $regionId);
+    $result = $api->listSecurityGroups($projectId);
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load security groups.'];
@@ -833,61 +855,12 @@ function cloudpe_cmp_admin_load_security_groups(int $serverId, string $projectId
 }
 
 /**
- * Load available regions from the CMP API.
- *
- * @param int    $serverId WHMCS server ID
- * @param string $service  Optional service filter (e.g. 'vm')
- * @return array  Keys: success (bool), regions (array)|error (string)
- */
-function cloudpe_cmp_admin_load_regions(int $serverId, string $service = 'vm'): array
-{
-  $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
-  if (!file_exists($apiLibPath)) {
-    return ['success' => false, 'error' => 'CloudPeCmpAPI library not found.'];
-  }
-  require_once $apiLibPath;
-
-  $server = Capsule::table('tblservers')->where('id', $serverId)->first();
-  if (!$server) {
-    return ['success' => false, 'error' => 'Server not found.'];
-  }
-
-  $params = [
-    'serverhostname'   => $server->hostname,
-    'serverpassword'   => decrypt($server->password),
-    'serveraccesshash' => $server->accesshash,
-    'serversecure'     => $server->secure,
-  ];
-
-  try {
-    $api    = new CloudPeCmpAPI($params);
-    $result = $api->listRegions($service);
-
-    if (!$result['success']) {
-      return ['success' => false, 'error' => $result['error'] ?? 'Failed to load regions.'];
-    }
-
-    $regions = [];
-    foreach ((array)($result['regions'] ?? []) as $r) {
-      $regions[] = [
-        'id'   => $r['id'] ?? $r['slug'] ?? '',
-        'name' => $r['name'] ?? $r['display_name'] ?? $r['id'] ?? '',
-      ];
-    }
-
-    return ['success' => true, 'regions' => $regions];
-  } catch (\Exception $e) {
-    return ['success' => false, 'error' => $e->getMessage()];
-  }
-}
-
-/**
  * Load available volume types from the CMP API.
  *
  * @param int $serverId WHMCS server ID
  * @return array  Keys: success (bool), volume_types (array)|error (string)
  */
-function cloudpe_cmp_admin_load_volume_types(int $serverId, string $regionId = ''): array
+function cloudpe_cmp_admin_load_volume_types(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -900,10 +873,6 @@ function cloudpe_cmp_admin_load_volume_types(int $serverId, string $regionId = '
     return ['success' => false, 'error' => 'Server not found.'];
   }
 
-  if (empty($regionId)) {
-    return ['success' => false, 'error' => 'Region is required. Please select a region before loading storage policies.'];
-  }
-
   $params = [
     'serverhostname'   => $server->hostname,
     'serverpassword'   => decrypt($server->password),
@@ -913,7 +882,7 @@ function cloudpe_cmp_admin_load_volume_types(int $serverId, string $regionId = '
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listVolumeTypes($regionId);
+    $result = $api->listVolumeTypes();
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load volume types.'];
@@ -934,13 +903,12 @@ function cloudpe_cmp_admin_load_volume_types(int $serverId, string $regionId = '
 }
 
 /**
- * Load flavor groups for a region.
+ * Load flavor groups for the server's region.
  *
- * @param int    $serverId  WHMCS server ID
- * @param string $regionId  Region ID / slug
+ * @param int $serverId WHMCS server ID
  * @return array Keys: success (bool), groups (array)|error (string)
  */
-function cloudpe_cmp_admin_load_flavor_groups(int $serverId, string $regionId = ''): array
+function cloudpe_cmp_admin_load_flavor_groups(int $serverId): array
 {
   $apiLibPath = dirname(dirname(__DIR__)) . '/servers/cloudpe_cmp/lib/CloudPeCmpAPI.php';
   if (!file_exists($apiLibPath)) {
@@ -962,7 +930,7 @@ function cloudpe_cmp_admin_load_flavor_groups(int $serverId, string $regionId = 
 
   try {
     $api    = new CloudPeCmpAPI($params);
-    $result = $api->listFlavorGroups($regionId);
+    $result = $api->listFlavorGroups();
 
     if (!$result['success']) {
       return ['success' => false, 'error' => $result['error'] ?? 'Failed to load flavor groups.'];
@@ -1021,6 +989,32 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
   if (!$serverId) {
     return ['success' => false, 'message' => 'No server selected.'];
   }
+
+  // Products to link
+  $productIds = [];
+  $rawProducts = $params['products'] ?? [];
+  if (is_array($rawProducts)) {
+    foreach ($rawProducts as $pid) {
+      $pid = (int)$pid;
+      if ($pid > 0) $productIds[] = $pid;
+    }
+  }
+  if (empty($productIds)) {
+    return ['success' => false, 'message' => 'At least one product must be selected.'];
+  }
+
+  $includeOs   = !empty($params['include_os']);
+  $includeSize = !empty($params['include_size']);
+  $includeDisk = !empty($params['include_disk']);
+  if (!$includeOs && !$includeSize && !$includeDisk) {
+    return ['success' => false, 'message' => 'At least one option type (OS, Size, or Disk) must be selected.'];
+  }
+
+  $multQ = (float)($params['mult_q'] ?? 3);
+  $multS = (float)($params['mult_s'] ?? 6);
+  $multA = (float)($params['mult_a'] ?? 12);
+  $multB = (float)($params['mult_b'] ?? 24);
+  $multT = (float)($params['mult_t'] ?? 36);
 
   // Load saved images
   $savedImages  = cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
@@ -1095,7 +1089,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
     $sortOrder = 0;
 
     // --- Operating System ---
-    if (!empty($savedImages)) {
+    if ($includeOs && !empty($savedImages)) {
       $osOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'         => $groupId,
         'optionname'  => 'Operating System',
@@ -1109,7 +1103,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
       $osSubOrder = 0;
       foreach ($savedImages as $imageId) {
         $displayName = $imageNames[$imageId] ?? $imageId;
-        $price       = (float)($imagePrices[$imageId] ?? 0);
+        $stored      = $imagePrices[$imageId] ?? 0;
 
         $subId = Capsule::table('tblproductconfigoptionssub')->insertGetId([
           'configid'  => $osOptionId,
@@ -1121,6 +1115,9 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
         // Insert pricing (all currencies at once via tblpricing)
         $currencies = Capsule::table('tblcurrencies')->get();
         foreach ($currencies as $currency) {
+          $price = is_array($stored)
+            ? (float)($stored[$currency->id] ?? ($stored[(string)$currency->id] ?? 0))
+            : (float)$stored; // legacy scalar
           Capsule::table('tblpricing')->insert([
             'type'      => 'configoptions',
             'currency'  => $currency->id,
@@ -1131,19 +1128,19 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'asetupfee' => 0,
             'bsetupfee' => 0,
             'tsetupfee' => 0,
-            'monthly'   => $price,
-            'quarterly' => 0,
-            'semiannually' => 0,
-            'annually'  => 0,
-            'biennially'=> 0,
-            'triennially' => 0,
+            'monthly'      => $price,
+            'quarterly'    => $price * $multQ,
+            'semiannually' => $price * $multS,
+            'annually'     => $price * $multA,
+            'biennially'   => $price * $multB,
+            'triennially'  => $price * $multT,
           ]);
         }
       }
     }
 
     // --- Server Size ---
-    if (!empty($savedFlavors)) {
+    if ($includeSize && !empty($savedFlavors)) {
       $sizeOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'        => $groupId,
         'optionname' => 'Server Size',
@@ -1157,7 +1154,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
       $sizeSubOrder = 0;
       foreach ($savedFlavors as $flavorId) {
         $displayName = $flavorDisplayNames[$flavorId] ?? $flavorNames[$flavorId] ?? $flavorId;
-        $price       = (float)($flavorPrices[$flavorId] ?? 0);
+        $stored      = $flavorPrices[$flavorId] ?? 0;
 
         $subId = Capsule::table('tblproductconfigoptionssub')->insertGetId([
           'configid'  => $sizeOptionId,
@@ -1168,6 +1165,9 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
         $currencies = Capsule::table('tblcurrencies')->get();
         foreach ($currencies as $currency) {
+          $price = is_array($stored)
+            ? (float)($stored[$currency->id] ?? ($stored[(string)$currency->id] ?? 0))
+            : (float)$stored; // legacy scalar
           Capsule::table('tblpricing')->insert([
             'type'         => 'configoptions',
             'currency'     => $currency->id,
@@ -1179,18 +1179,18 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'bsetupfee'    => 0,
             'tsetupfee'    => 0,
             'monthly'      => $price,
-            'quarterly'    => 0,
-            'semiannually' => 0,
-            'annually'     => 0,
-            'biennially'   => 0,
-            'triennially'  => 0,
+            'quarterly'    => $price * $multQ,
+            'semiannually' => $price * $multS,
+            'annually'     => $price * $multA,
+            'biennially'   => $price * $multB,
+            'triennially'  => $price * $multT,
           ]);
         }
       }
     }
 
     // --- Disk Space ---
-    if (!empty($savedDisks)) {
+    if ($includeDisk && !empty($savedDisks)) {
       $diskOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'        => $groupId,
         'optionname' => 'Disk Space',
@@ -1203,9 +1203,10 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
       $diskSubOrder = 0;
       foreach ($savedDisks as $disk) {
-        $diskSizeGb  = (int)($disk['size_gb'] ?? 0);
-        $diskLabel   = $disk['label'] ?? ($diskSizeGb . ' GB');
-        $diskPrice   = (float)($disk['price'] ?? 0);
+        $diskSizeGb = (int)($disk['size_gb'] ?? 0);
+        $diskLabel  = $disk['label'] ?? ($diskSizeGb . ' GB');
+        $priceMap   = $disk['prices'] ?? null;
+        $legacy     = (float)($disk['price'] ?? 0);
 
         if (!$diskSizeGb) {
           continue;
@@ -1220,6 +1221,9 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
         $currencies = Capsule::table('tblcurrencies')->get();
         foreach ($currencies as $currency) {
+          $diskPrice = is_array($priceMap)
+            ? (float)($priceMap[$currency->id] ?? $priceMap[(string)$currency->id] ?? 0)
+            : $legacy;
           Capsule::table('tblpricing')->insert([
             'type'         => 'configoptions',
             'currency'     => $currency->id,
@@ -1231,26 +1235,19 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'bsetupfee'    => 0,
             'tsetupfee'    => 0,
             'monthly'      => $diskPrice,
-            'quarterly'    => 0,
-            'semiannually' => 0,
-            'annually'     => 0,
-            'biennially'   => 0,
-            'triennially'  => 0,
+            'quarterly'    => $diskPrice * $multQ,
+            'semiannually' => $diskPrice * $multS,
+            'annually'     => $diskPrice * $multA,
+            'biennially'   => $diskPrice * $multB,
+            'triennially'  => $diskPrice * $multT,
           ]);
         }
       }
     }
 
-    // Auto-assign the new group to every product using the cloudpe_cmp
-    // server module so admins don't have to hop into
-    // Setup -> Products/Services -> [Product] -> Configurable Options
-    // and link it manually.
-    $cmpProductIds = Capsule::table('tblproducts')
-      ->where('servertype', 'cloudpe_cmp')
-      ->pluck('id')
-      ->all();
+    // Link the new group to the products the admin selected.
     $assignedCount = 0;
-    foreach ($cmpProductIds as $pid) {
+    foreach ($productIds as $pid) {
       $exists = Capsule::table('tblproductconfiglinks')
         ->where('gid', $groupId)->where('pid', $pid)->exists();
       if (!$exists) {
@@ -1262,12 +1259,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
       }
     }
 
-    $msg = 'Configurable options group "' . $groupName . '" created successfully.';
-    if ($assignedCount > 0) {
-      $msg .= ' Assigned to ' . $assignedCount . ' CloudPe CMP product(s).';
-    } elseif (empty($cmpProductIds)) {
-      $msg .= ' No CloudPe CMP products found to assign — create a product first, then link manually.';
-    }
+    $msg = 'Configurable options group "' . $groupName . '" created successfully. Linked to ' . $assignedCount . ' product(s).';
 
     return [
       'success'  => true,
@@ -1355,40 +1347,29 @@ function cloudpe_cmp_admin_output(array $vars): void
         echo json_encode(cloudpe_cmp_admin_get_all_releases());
         exit;
 
-      case 'load_regions':
-        $service = trim($_POST['service'] ?? 'vm');
-        echo json_encode(cloudpe_cmp_admin_load_regions($serverId, $service));
-        exit;
-
       case 'load_images':
-        $regionId = trim($_POST['region_id'] ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_images($serverId, $regionId));
+        echo json_encode(cloudpe_cmp_admin_load_images($serverId));
         exit;
 
       case 'load_flavors':
-        $regionId = trim($_POST['region_id'] ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId, $regionId));
+        echo json_encode(cloudpe_cmp_admin_load_flavors($serverId));
         exit;
 
       case 'load_projects':
-        $projRegionId = trim($_POST['region_id'] ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_projects($serverId, $projRegionId));
+        echo json_encode(cloudpe_cmp_admin_load_projects($serverId));
         exit;
 
       case 'load_security_groups':
         $sgProjectId = trim($_POST['project_id'] ?? '');
-        $sgRegionId  = trim($_POST['region_id']  ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_security_groups($serverId, $sgProjectId, $sgRegionId));
+        echo json_encode(cloudpe_cmp_admin_load_security_groups($serverId, $sgProjectId));
         exit;
 
       case 'load_volume_types':
-        $vtRegionId = trim($_POST['region_id'] ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_volume_types($serverId, $vtRegionId));
+        echo json_encode(cloudpe_cmp_admin_load_volume_types($serverId));
         exit;
 
       case 'load_flavor_groups':
-        $fgRegionId = trim($_POST['region_id'] ?? '');
-        echo json_encode(cloudpe_cmp_admin_load_flavor_groups($serverId, $fgRegionId));
+        echo json_encode(cloudpe_cmp_admin_load_flavor_groups($serverId));
         exit;
 
       case 'save_projects':
@@ -1401,28 +1382,6 @@ function cloudpe_cmp_admin_output(array $vars): void
         $names = $_POST['names'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'project_names', $names);
         echo json_encode(['success' => true, 'message' => 'Project display names saved.']);
-        exit;
-
-      case 'save_project_regions':
-        $regions = $_POST['regions'] ?? [];
-        cloudpe_cmp_admin_save_setting($serverId, 'project_regions', $regions);
-        echo json_encode(['success' => true]);
-        exit;
-
-      case 'save_selected_regions':
-        $selRegions = $_POST['selected_regions'] ?? [];
-        $regNames   = $_POST['region_names'] ?? [];
-        cloudpe_cmp_admin_save_setting($serverId, 'selected_regions', $selRegions);
-        cloudpe_cmp_admin_save_setting($serverId, 'region_names', $regNames);
-        echo json_encode(['success' => true]);
-        exit;
-
-      case 'save_default_region_project':
-        $region  = trim($_POST['default_region']  ?? '');
-        $project = trim($_POST['default_project'] ?? '');
-        cloudpe_cmp_admin_save_setting($serverId, 'default_region', $region);
-        cloudpe_cmp_admin_save_setting($serverId, 'default_project', $project);
-        echo json_encode(['success' => true, 'message' => 'Default region and project saved.']);
         exit;
 
       case 'save_security_groups':
@@ -1447,21 +1406,6 @@ function cloudpe_cmp_admin_output(array $vars): void
         $selectedFlavors = $_POST['selected_flavors'] ?? [];
         cloudpe_cmp_admin_save_setting($serverId, 'selected_flavors', $selectedFlavors);
         echo json_encode(['success' => true, 'message' => 'Flavor selection saved.']);
-        exit;
-
-      case 'save_image_regions':
-        $regions = $_POST['regions'] ?? [];
-        // Merge with existing so regions from other loads aren't lost
-        $existing = cloudpe_cmp_admin_get_setting($serverId, 'image_regions', []) ?: [];
-        cloudpe_cmp_admin_save_setting($serverId, 'image_regions', array_merge((array)$existing, $regions));
-        echo json_encode(['success' => true]);
-        exit;
-
-      case 'save_flavor_regions':
-        $regions = $_POST['regions'] ?? [];
-        $existing = cloudpe_cmp_admin_get_setting($serverId, 'flavor_regions', []) ?: [];
-        cloudpe_cmp_admin_save_setting($serverId, 'flavor_regions', array_merge((array)$existing, $regions));
-        echo json_encode(['success' => true]);
         exit;
 
       case 'save_flavor_specs':
@@ -1528,10 +1472,53 @@ function cloudpe_cmp_admin_output(array $vars): void
 
       case 'create_config_group':
         $result = cloudpe_cmp_admin_create_config_group([
-          'server_id'  => $serverId,
-          'group_name' => trim($_POST['group_name'] ?? 'CloudPe CMP Options'),
+          'server_id'    => $serverId,
+          'group_name'   => trim($_POST['group_name'] ?? 'CloudPe CMP Options'),
+          'products'     => $_POST['products']     ?? [],
+          'include_os'   => $_POST['include_os']   ?? 0,
+          'include_size' => $_POST['include_size'] ?? 0,
+          'include_disk' => $_POST['include_disk'] ?? 0,
+          'mult_q'       => $_POST['mult_q']       ?? 3,
+          'mult_s'       => $_POST['mult_s']       ?? 6,
+          'mult_a'       => $_POST['mult_a']       ?? 12,
+          'mult_b'       => $_POST['mult_b']       ?? 24,
+          'mult_t'       => $_POST['mult_t']       ?? 36,
         ]);
         echo json_encode($result);
+        exit;
+
+      case 'repair_settings':
+        if (!$serverId) {
+          echo json_encode(['success' => false, 'error' => 'No server selected.']);
+          exit;
+        }
+        $rows = Capsule::table('mod_cloudpe_cmp_settings')->where('server_id', $serverId)->get();
+        $repaired = [];
+        $errors   = [];
+        foreach ($rows as $s) {
+          $original  = $s->setting_value;
+          $sanitized = cloudpe_cmp_admin_sanitize_quotes($original);
+          if ($original !== $sanitized) {
+            try {
+              Capsule::table('mod_cloudpe_cmp_settings')
+                ->where('id', $s->id)
+                ->update(['setting_value' => $sanitized, 'updated_at' => date('Y-m-d H:i:s')]);
+              $repaired[] = [
+                'key'          => $s->setting_key,
+                'before_valid' => json_decode((string)$original,  true) !== null,
+                'after_valid'  => json_decode((string)$sanitized, true) !== null,
+              ];
+            } catch (\Exception $e) {
+              $errors[] = ['key' => $s->setting_key, 'error' => $e->getMessage()];
+            }
+          }
+        }
+        echo json_encode([
+          'success'        => true,
+          'repaired_count' => count($repaired),
+          'repaired'       => $repaired,
+          'errors'         => $errors,
+        ]);
         exit;
 
       default:
@@ -1590,7 +1577,7 @@ function cloudpe_cmp_admin_output(array $vars): void
       </div>
     <?php else: ?>
 
-    <!-- Server + Region selector -->
+    <!-- Server selector -->
     <div id="cmp-server-selector" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
       <form method="get" style="display:flex; align-items:center; gap:8px;">
         <input type="hidden" name="module" value="cloudpe_cmp_admin">
@@ -1606,57 +1593,11 @@ function cloudpe_cmp_admin_output(array $vars): void
           <?php endforeach; ?>
         </select>
       </form>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <label style="margin:0;"><strong>Region:</strong></label>
-        <select id="cmp-region-select" class="form-control" style="width:auto; min-width:160px;">
-          <option value="">Loading regions...</option>
-        </select>
-      </div>
     </div>
     <script>
-    // Global region state — shared across all tabs.
+    // Global state — shared across all tabs.
     window.cmpServerId  = <?php echo $serverId; ?>;
     window.cmpModuleUrl = '<?php echo $moduleUrl; ?>';
-    window.cmpRegionId  = '';
-    window.cmpRegions   = {};  // id → name
-
-    $.post(window.cmpModuleUrl, { action: 'load_regions', server_id: window.cmpServerId, service: 'vm' }, function(resp) {
-      var $sel = $('#cmp-region-select').empty();
-      if (resp.success && resp.regions && resp.regions.length) {
-        resp.regions.forEach(function(r) {
-          window.cmpRegions[r.id] = r.name || r.id;
-          $sel.append('<option value="' + $('<span>').text(r.id).html() + '">' + $('<span>').text(r.name || r.id).html() + '</option>');
-        });
-        window.cmpRegionId = resp.regions[0].id;
-      } else {
-        $sel.append('<option value="">No regions found</option>');
-      }
-      $(document).trigger('cmp:regions-loaded');
-    }, 'json').fail(function() {
-      $('#cmp-region-select').empty().append('<option value="">Failed to load</option>');
-      $(document).trigger('cmp:regions-loaded');
-    });
-
-    function cmpFilterTablesByRegion(regionId) {
-      ['#images-table', '#flavors-table'].forEach(function(tbl) {
-        var n = 0;
-        $(tbl + ' tbody tr').each(function() {
-          var rowRegion = $(this).attr('data-region') || '';
-          var show = !regionId || rowRegion === '' || rowRegion === regionId;
-          $(this).toggle(show);
-          $(this).find('.row-num').text(show ? ++n : '');
-        });
-      });
-    }
-
-    $('#cmp-region-select').on('change', function() {
-      window.cmpRegionId = $(this).val();
-      cmpFilterTablesByRegion(window.cmpRegionId);
-    });
-
-    $(document).on('cmp:regions-loaded', function() {
-      cmpFilterTablesByRegion(window.cmpRegionId);
-    });
     </script>
 
     <!-- Tab navigation -->
@@ -1667,7 +1608,6 @@ function cloudpe_cmp_admin_output(array $vars): void
         'images'          => 'Images',
         'flavors'         => 'Flavors',
         'disks'           => 'Disk Sizes',
-        'additional'      => 'Additional',
         'create_group'    => 'Config Groups',
         'updates'         => 'Updates',
       ];
@@ -1692,9 +1632,6 @@ function cloudpe_cmp_admin_output(array $vars): void
           break;
         case 'disks':
           cloudpe_cmp_admin_render_disks($serverId, $moduleUrl);
-          break;
-        case 'additional':
-          cloudpe_cmp_admin_render_additional($serverId, $moduleUrl);
           break;
         case 'create_group':
           cloudpe_cmp_admin_render_create_group($serverId, $moduleUrl);
@@ -1739,8 +1676,7 @@ function cloudpe_cmp_admin_render_dashboard(int $serverId, string $moduleUrl, $s
     <table class="table table-bordered" style="max-width:600px;">
       <tr><th style="width:160px;">Name</th><td><?php echo htmlspecialchars($server->name); ?></td></tr>
       <tr><th>Hostname</th><td><?php echo htmlspecialchars($server->hostname); ?></td></tr>
-      <tr><th>SSL</th><td><?php echo $server->secure === 'on' ? '<span class="label label-success">Enabled</span>' : '<span class="label label-default">Disabled</span>'; ?></td></tr>
-      <tr><th>Module Version</th><td><?php echo CLOUDPE_CMP_MODULE_VERSION; ?></td></tr>
+      <tr><th>Secure</th><td><?php echo $server->secure ? 'Yes (HTTPS)' : 'No (HTTP)'; ?></td></tr>
     </table>
     <?php else: ?>
     <div class="alert alert-warning">Server not found.</div>
@@ -1807,6 +1743,11 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
   $savedImages  = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
   $imageNames   = (array)cloudpe_cmp_admin_get_setting($serverId, 'image_names', []);
   $imagePrices  = (array)cloudpe_cmp_admin_get_setting($serverId, 'image_prices', []);
+  $currencies   = Capsule::table('tblcurrencies')
+    ->whereIn('code', ['INR', 'USD'])
+    ->orderBy('id')
+    ->get(['id', 'code']);
+  $firstCurrId  = $currencies->count() ? (int)$currencies->first()->id : 0;
   ?>
   <div class="cmp-section">
     <h4>Images</h4>
@@ -1831,30 +1772,39 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-images" title="Select/deselect all"></th>
           <th>Name</th>
-          <th>Region</th>
           <th>Image ID</th>
           <th>Display Name</th>
-          <th>Monthly Price</th>
+          <?php foreach ($currencies as $c): ?>
+          <th><?php echo htmlspecialchars($c->code); ?> /mo</th>
+          <?php endforeach; ?>
         </tr>
       </thead>
       <tbody>
         <?php
-        $imageRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'image_regions', []);
         foreach ($savedImages as $i => $imgId):
           $savedName   = $imageNames[$imgId] ?? '';
           $displayName = ($savedName !== '' && $savedName !== $imgId) ? $savedName : '';
-          $region      = $imageRegions[$imgId] ?? '—';
+          $priceEntry  = $imagePrices[$imgId] ?? null;
         ?>
-        <tr data-id="<?php echo htmlspecialchars($imgId); ?>" data-region="<?php echo htmlspecialchars($imageRegions[$imgId] ?? ''); ?>" data-saved="1">
+        <tr data-id="<?php echo htmlspecialchars($imgId); ?>" data-saved="1">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="img-check" checked></td>
           <td class="img-api-name"><?php echo htmlspecialchars($displayName); ?></td>
-          <td class="img-region text-muted" style="white-space:nowrap;"><?php echo htmlspecialchars($region); ?></td>
           <td><small class="text-muted"><?php echo htmlspecialchars($imgId); ?></small></td>
           <td><input type="text" class="form-control input-sm img-name"
                value="<?php echo htmlspecialchars($displayName); ?>"></td>
-          <td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" style="width:90px;"
-               value="<?php echo htmlspecialchars($imagePrices[$imgId] ?? '0'); ?>"></td>
+          <?php foreach ($currencies as $c):
+            if (is_array($priceEntry)) {
+              $cellVal = $priceEntry[$c->id] ?? ($priceEntry[(string)$c->id] ?? '0');
+            } else {
+              // Legacy scalar: only fill for the first currency
+              $cellVal = ((int)$c->id === $firstCurrId) ? ($priceEntry ?? '0') : '0';
+            }
+          ?>
+          <td><input type="number" step="0.01" min="0" class="form-control input-sm img-price"
+               data-currency="<?php echo (int)$c->id; ?>"
+               value="<?php echo htmlspecialchars((string)$cellVal); ?>" style="width:90px;"></td>
+          <?php endforeach; ?>
         </tr>
         <?php endforeach; ?>
       </tbody>
@@ -1862,7 +1812,7 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     </div>
 
     <?php if (empty($savedImages)): ?>
-    <p class="text-muted">No images configured yet. Click <strong>Load from API</strong> to fetch available images from all regions.</p>
+    <p class="text-muted">No images configured yet. Click <strong>Load from API</strong> to fetch available images.</p>
     <?php endif; ?>
   </div>
 
@@ -1874,16 +1824,8 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
     var savedImageIds   = <?php echo json_encode(array_values($savedImages)); ?>;
     var savedNames      = <?php echo json_encode((object)($imageNames ?: new stdClass())); ?>;
     var savedPrices     = <?php echo json_encode((object)($imagePrices ?: new stdClass())); ?>;
-    var savedImgRegions = <?php echo json_encode((object)($imageRegions ?: new stdClass())); ?>;
-
-    // Resolve region IDs to names for saved rows — wait for global region map
-    function resolveImgRegionNames() {
-      $('#images-table tbody tr').each(function() {
-        var rId = $(this).attr('data-region') || '';
-        if (rId && window.cmpRegions[rId]) $(this).find('.img-region').text(window.cmpRegions[rId]);
-      });
-    }
-    $(document).on('cmp:regions-loaded', resolveImgRegionNames);
+    var currencies      = <?php echo json_encode($currencies->toArray()); ?>;
+    var firstCurrId     = <?php echo (int)$firstCurrId; ?>;
 
     function reNumber() {
       var n = 0;
@@ -1892,24 +1834,38 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       });
     }
 
-    function addRows(items, regionId, regionLabel) {
+    function addRows(items) {
       var existingIds = [];
       $('#images-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
       $.each(items, function(i, img) {
         if (existingIds.indexOf(String(img.id)) !== -1) return; // skip duplicates
         var isSaved = savedImageIds.indexOf(img.id) !== -1;
-        var row = $('<tr>').attr('data-id', img.id).attr('data-region', regionId || '').attr('data-saved', '0');
+        var row = $('<tr>').attr('data-id', img.id).attr('data-saved', '0');
+        var saved = savedPrices[img.id];
+        var savedIsMap = saved && typeof saved === 'object';
+        var priceCells = '';
+        currencies.forEach(function(c) {
+          var v;
+          if (savedIsMap) {
+            v = saved[c.id] !== undefined ? saved[c.id] : (saved[String(c.id)] !== undefined ? saved[String(c.id)] : '0');
+          } else if (saved !== undefined && saved !== null && saved !== '') {
+            // Legacy scalar: only fill for first currency
+            v = (parseInt(c.id) === firstCurrId) ? saved : '0';
+          } else {
+            v = '0';
+          }
+          priceCells += '<td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" data-currency="' +
+            parseInt(c.id) + '" style="width:90px;" value="' + $('<span>').text(v).html() + '"></td>';
+        });
         row.html(
           '<td class="row-num"></td>' +
           '<td><input type="checkbox" class="img-check"' + (isSaved ? ' checked' : '') + '></td>' +
           '<td class="img-api-name">' + $('<span>').text(img.name).html() + '</td>' +
-          '<td class="img-region text-muted" style="white-space:nowrap;">' + $('<span>').text(regionLabel || regionId || '—').html() + '</td>' +
           '<td><small class="text-muted">' + $('<span>').text(img.id).html() + '</small></td>' +
           '<td><input type="text" class="form-control input-sm img-name" value="' +
             $('<span>').text(savedNames[img.id] || img.name).html() + '"></td>' +
-          '<td><input type="number" step="0.01" min="0" class="form-control input-sm img-price" style="width:90px;" value="' +
-            $('<span>').text(savedPrices[img.id] || '0').html() + '"></td>'
+          priceCells
         );
         $('#images-table tbody').append(row);
       });
@@ -1927,23 +1883,21 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       });
     });
 
-    // Load from API: fetch images for the currently selected region
+    // Load from API: fetch images for the server's region
     $('#btn-load-images').on('click', function() {
-      var btn      = $(this).prop('disabled', true);
-      var regionId = window.cmpRegionId || '';
-      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
-      // Remove previously-loaded (unsaved) rows for this region so re-fetch is a clean refresh
-      $('#images-table tbody tr[data-region="' + regionId + '"][data-saved="0"]').remove();
+      var btn = $(this).prop('disabled', true);
+      // Remove previously-loaded (unsaved) rows so re-fetch is a clean refresh
+      $('#images-table tbody tr[data-saved="0"]').remove();
       $('#btn-save-images').prop('disabled', true);
       $('#images-loading').show();
       $('#images-loading-text').text('Loading images...');
       $('#images-error').hide();
 
-      $.post(moduleUrl, { action: 'load_images', server_id: serverId, region_id: regionId }, function(resp) {
+      $.post(moduleUrl, { action: 'load_images', server_id: serverId }, function(resp) {
         if (resp.success && resp.images && resp.images.length) {
-          addRows(resp.images, regionId, regionLabel);
+          addRows(resp.images);
         } else {
-          $('#images-error').text(resp.error || 'No images returned for the selected region.').show();
+          $('#images-error').text(resp.error || 'No images returned.').show();
         }
       }, 'json').always(function() {
         btn.prop('disabled', false);
@@ -1975,24 +1929,25 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl): void
       var saveBtn = $(this).prop('disabled', true);
       $('#btn-load-images').prop('disabled', true);
       $('#images-saving').show();
-      var ids = [], names = {}, prices = {}, regions = {};
+      var ids = [], names = {}, prices = {};
       $('#images-table tbody tr').each(function() {
         var row = $(this);
         if (row.find('.img-check').is(':checked')) {
           var id = row.data('id');
           ids.push(id);
           names[id]   = row.find('.img-name').val();
-          prices[id]  = row.find('.img-price').val();
-          var rId = row.attr('data-region') || '';
-          if (rId) regions[id] = rId;
+          var perCurr = {};
+          row.find('.img-price').each(function() {
+            perCurr[$(this).data('currency')] = $(this).val();
+          });
+          prices[id] = perCurr;
         }
       });
 
       $.when(
         $.post(moduleUrl, { action: 'save_images',        server_id: serverId, selected_images: ids }, null, 'json'),
         $.post(moduleUrl, { action: 'save_image_names',   server_id: serverId, names: names         }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_image_prices',  server_id: serverId, prices: prices       }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_image_regions', server_id: serverId, regions: regions     }, null, 'json')
+        $.post(moduleUrl, { action: 'save_image_prices',  server_id: serverId, prices: prices       }, null, 'json')
       ).always(function() {
         savedImageIds = ids;
         saveBtn.prop('disabled', false);
@@ -2025,6 +1980,11 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
   // Specs persisted per-flavor so vCPU/RAM survive page reload.
   // Shape: { "<flavorId>": { "vcpu": 2, "memory_gb": 4 }, ... }
   $flavorSpecs    = (array)cloudpe_cmp_admin_get_setting($serverId, 'flavor_specs', []);
+  $currencies     = Capsule::table('tblcurrencies')
+    ->whereIn('code', ['INR', 'USD'])
+    ->orderBy('id')
+    ->get(['id', 'code']);
+  $firstCurrId    = $currencies->count() ? (int)$currencies->first()->id : 0;
   ?>
   <div class="cmp-section">
     <h4>Flavors</h4>
@@ -2032,7 +1992,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       <button class="btn btn-primary" id="btn-load-flavors">
         <i class="fa fa-refresh"></i> Load from API
       </button>
-      <span id="flavors-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="flavors-loading-text">Fetching regions...</span></span>
+      <span id="flavors-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="flavors-loading-text">Loading...</span></span>
       <input type="text" id="flavors-search" class="form-control cmp-search" placeholder="Filter flavors...">
       <span id="flavors-saving" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="flavors-saving-text">Saving configuration...</span></span>
       <span id="flavors-save-msg" class="cmp-save-msg" style="display:none;"></span>
@@ -2041,6 +2001,14 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       </button>
     </div>
     <div id="flavors-error" class="alert alert-danger" style="display:none;"></div>
+    <div id="flavors-price-changes" class="alert alert-warning" style="display:none;"></div>
+
+    <style>
+      /* Keep the latest-price icon sitting next to the price input, not below it. */
+      #flavors-table td .flv-price { display: inline-block; width: 80px; vertical-align: middle; }
+      .flv-price-apply { display: inline-block; vertical-align: middle; margin-left: 4px; color: #f0ad4e; cursor: pointer; font-size: 14px; }
+      .flv-price-apply:hover { color: #ec971f; }
+    </style>
 
     <div class="cmp-table-wrap">
     <table class="table table-bordered cmp-resource-table" id="flavors-table">
@@ -2049,39 +2017,47 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-flavors" title="Select/deselect all"></th>
           <th>Name</th>
-          <th>Region</th>
           <th>vCPU</th>
           <th>RAM (GB)</th>
           <th>Flavor ID</th>
           <th>Display Name</th>
-          <th>Monthly Price</th>
+          <?php foreach ($currencies as $c): ?>
+          <th><?php echo htmlspecialchars($c->code); ?> /mo</th>
+          <?php endforeach; ?>
         </tr>
       </thead>
       <tbody>
         <?php
-        $flavorRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'flavor_regions', []);
         foreach ($savedFlavors as $i => $flvId):
           $savedName   = $flavorNames[$flvId] ?? '';
           $displayName = ($savedName !== '' && $savedName !== $flvId) ? $savedName : '';
-          $region      = $flavorRegions[$flvId] ?? '—';
+          $priceEntry  = $flavorPrices[$flvId] ?? null;
         ?>
         <?php
           $spec     = (array)($flavorSpecs[$flvId] ?? []);
           $specVcpu = isset($spec['vcpu']) ? (int)$spec['vcpu'] : null;
           $specRam  = isset($spec['memory_gb']) ? (float)$spec['memory_gb'] : null;
         ?>
-        <tr data-id="<?php echo htmlspecialchars($flvId); ?>" data-region="<?php echo htmlspecialchars($flavorRegions[$flvId] ?? ''); ?>" data-saved="1">
+        <tr data-id="<?php echo htmlspecialchars($flvId); ?>" data-saved="1">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="flv-check" checked></td>
           <td class="flv-api-name"><?php echo htmlspecialchars($flavorApiNames[$flvId] ?? $flvId); ?></td>
-          <td class="flv-region text-muted" style="white-space:nowrap;"><?php echo htmlspecialchars($region); ?></td>
           <td class="flv-vcpu"><?php echo $specVcpu !== null ? $specVcpu : '—'; ?></td>
           <td class="flv-ram"><?php echo $specRam !== null ? $specRam : '—'; ?></td>
           <td><small class="text-muted"><?php echo htmlspecialchars($flvId); ?></small></td>
           <td><input type="text" class="form-control input-sm flv-name"
                value="<?php echo htmlspecialchars($displayName); ?>"></td>
-          <td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" style="width:90px;"
-               value="<?php echo htmlspecialchars($flavorPrices[$flvId] ?? '0'); ?>"></td>
+          <?php foreach ($currencies as $c):
+            if (is_array($priceEntry)) {
+              $cellVal = $priceEntry[$c->id] ?? ($priceEntry[(string)$c->id] ?? '0');
+            } else {
+              $cellVal = ((int)$c->id === $firstCurrId) ? ($priceEntry ?? '0') : '0';
+            }
+          ?>
+          <td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price"
+               data-currency="<?php echo (int)$c->id; ?>"
+               value="<?php echo htmlspecialchars((string)$cellVal); ?>" style="width:90px;"></td>
+          <?php endforeach; ?>
         </tr>
         <?php endforeach; ?>
       </tbody>
@@ -2089,7 +2065,7 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     </div>
 
     <?php if (empty($savedFlavors)): ?>
-    <p class="text-muted">No flavors configured yet. Click <strong>Load from API</strong> to fetch available flavors from all regions.</p>
+    <p class="text-muted">No flavors configured yet. Click <strong>Load from API</strong> to fetch available flavors.</p>
     <?php endif; ?>
   </div>
 
@@ -2101,7 +2077,8 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
     var savedFlavorIds  = <?php echo json_encode(array_values($savedFlavors)); ?>;
     var savedNames      = <?php echo json_encode((object)($flavorNames ?: new stdClass())); ?>;
     var savedPrices     = <?php echo json_encode((object)($flavorPrices ?: new stdClass())); ?>;
-    var savedFlvRegions = <?php echo json_encode((object)($flavorRegions ?: new stdClass())); ?>;
+    var currencies      = <?php echo json_encode($currencies->toArray()); ?>;
+    var firstCurrId     = <?php echo (int)$firstCurrId; ?>;
 
     // Build the auto Display Name shown to customers: "X vCPU, Y GB RAM".
     function autoDisplayName(flv) {
@@ -2110,15 +2087,6 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       return vcpu + ' vCPU, ' + ram + ' GB RAM';
     }
 
-    // Resolve region IDs to names for saved rows — wait for global region map
-    function resolveFlvRegionNames() {
-      $('#flavors-table tbody tr').each(function() {
-        var rId = $(this).attr('data-region') || '';
-        if (rId && window.cmpRegions[rId]) $(this).find('.flv-region').text(window.cmpRegions[rId]);
-      });
-    }
-    $(document).on('cmp:regions-loaded', resolveFlvRegionNames);
-
     function reNumber() {
       var n = 0;
       $('#flavors-table tbody tr').each(function() {
@@ -2126,47 +2094,114 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       });
     }
 
-    function addRows(items, regionId, regionLabel) {
+    // Collect price-change notifications for the banner above the table.
+    var priceChangeNotes = [];
+
+    function codeForCurrencyId(id) {
+      var match = currencies.filter(function(c) { return parseInt(c.id) === parseInt(id); });
+      return match.length ? match[0].code : String(id);
+    }
+
+    // Compare saved input against API-returned price and, if different,
+    // show a "!" button next to the input that applies the new price on click.
+    function markPriceDiff($input, newValue, flvLabel) {
+      if (newValue === undefined || newValue === null || newValue === '') return;
+      var current = parseFloat($input.val());
+      var latest  = parseFloat(newValue);
+      if (isNaN(latest)) return;
+      if (!isNaN(current) && Math.abs(current - latest) < 0.001) return;
+
+      var code = codeForCurrencyId($input.data('currency'));
+      $input.siblings('.flv-price-apply').remove();
+      var $icon = $('<i class="fa fa-exclamation-circle flv-price-apply" role="button" tabindex="0" title="Apply latest price: ' + latest + '"></i>');
+      $icon.on('click', function() {
+        $input.val(latest);
+        $icon.remove();
+      });
+      $input.after($icon);
+      priceChangeNotes.push(flvLabel + ' — ' + code + ': ' + (isNaN(current) ? '—' : current) + ' → ' + latest);
+    }
+
+    function renderPriceChangeBanner() {
+      var $banner = $('#flavors-price-changes');
+      if (!priceChangeNotes.length) { $banner.hide(); return; }
+      var html = '<strong>' + priceChangeNotes.length + ' price change' + (priceChangeNotes.length === 1 ? '' : 's') + ' detected from API.</strong> Click the orange <code>!</code> next to a price to apply the latest value.';
+      html += '<ul style="margin:6px 0 0 16px;">';
+      priceChangeNotes.slice(0, 20).forEach(function(n) { html += '<li>' + $('<span>').text(n).html() + '</li>'; });
+      if (priceChangeNotes.length > 20) html += '<li>…and ' + (priceChangeNotes.length - 20) + ' more</li>';
+      html += '</ul>';
+      $banner.html(html).show();
+    }
+
+    function addRows(items) {
       var existingIds = [];
       $('#flavors-table tbody tr').each(function() { existingIds.push(String($(this).data('id'))); });
 
+      // Clear any stale "!" apply buttons from a previous load.
+      $('#flavors-table .flv-price-apply').remove();
+      priceChangeNotes = [];
+      $('#flavors-price-changes').hide();
+
       $.each(items, function(i, flv) {
+        var flvLabel = flv.name || flv.id;
+        var apiByCode = { 'INR': flv.price_monthly_inr, 'USD': flv.price_monthly_usd };
+
         if (existingIds.indexOf(String(flv.id)) !== -1) {
-          // Update vCPU, RAM, region for existing (saved) rows. Never
-          // overwrite the admin-edited Display Name — they chose it.
+          // Existing saved row: refresh specs + diff prices against API.
           var er = $('#flavors-table tbody tr[data-id="' + flv.id + '"]');
           if (flv.vcpu    !== undefined) er.find('.flv-vcpu').text(parseInt(flv.vcpu) || 0);
           if (flv.memory_gb !== undefined) er.find('.flv-ram').text(parseFloat(flv.memory_gb) || 0);
-          if (regionLabel || regionId) {
-            er.find('.flv-region').text(regionLabel || regionId);
-            er.attr('data-region', regionId || '');
-          }
-          // Only auto-fill the name when it is completely empty.
           var nameInput = er.find('.flv-name');
           if (!(nameInput.val() || '').trim()) {
             nameInput.val(autoDisplayName(flv));
           }
-          return; // don't add duplicate row
+          er.find('.flv-price').each(function() {
+            var $inp = $(this);
+            var code = codeForCurrencyId($inp.data('currency'));
+            markPriceDiff($inp, apiByCode[code], flvLabel);
+          });
+          return;
         }
         var isSaved = savedFlavorIds.indexOf(flv.id) !== -1;
-        var row = $('<tr>').attr('data-id', flv.id).attr('data-region', regionId || '').attr('data-saved', '0');
+        var row = $('<tr>').attr('data-id', flv.id).attr('data-saved', '0');
         var defaultName = savedNames[flv.id] || autoDisplayName(flv);
+        var saved = savedPrices[flv.id];
+        var savedIsMap = saved && typeof saved === 'object';
+        var apiPriceByCode = {
+          'INR': flv.price_monthly_inr,
+          'USD': flv.price_monthly_usd,
+        };
+        var priceCells = '';
+        currencies.forEach(function(c) {
+          var v;
+          if (savedIsMap && (saved[c.id] !== undefined || saved[String(c.id)] !== undefined)) {
+            v = saved[c.id] !== undefined ? saved[c.id] : saved[String(c.id)];
+          } else if (!savedIsMap && saved !== undefined && saved !== null && saved !== '' && parseInt(c.id) === firstCurrId) {
+            v = saved;
+          } else if (apiPriceByCode[c.code] !== undefined && apiPriceByCode[c.code] !== null) {
+            // Fall back to the price the CMP API returned with the flavor.
+            v = apiPriceByCode[c.code];
+          } else {
+            v = '0';
+          }
+          priceCells += '<td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" data-currency="' +
+            parseInt(c.id) + '" style="width:90px;" value="' + $('<span>').text(v).html() + '"></td>';
+        });
         row.html(
           '<td class="row-num"></td>' +
           '<td><input type="checkbox" class="flv-check"' + (isSaved ? ' checked' : '') + '></td>' +
           '<td class="flv-api-name">' + $('<span>').text(flv.name).html() + '</td>' +
-          '<td class="flv-region text-muted" style="white-space:nowrap;">' + $('<span>').text(regionLabel || regionId || '—').html() + '</td>' +
           '<td class="flv-vcpu">' + (parseInt(flv.vcpu) || 0) + '</td>' +
           '<td class="flv-ram">' + (parseFloat(flv.memory_gb) || 0) + '</td>' +
           '<td><small class="text-muted">' + $('<span>').text(flv.id).html() + '</small></td>' +
           '<td><input type="text" class="form-control input-sm flv-name" value="' +
             $('<span>').text(defaultName).html() + '"></td>' +
-          '<td><input type="number" step="0.01" min="0" class="form-control input-sm flv-price" style="width:90px;" value="' +
-            $('<span>').text(savedPrices[flv.id] || '0').html() + '"></td>'
+          priceCells
         );
         $('#flavors-table tbody').append(row);
       });
       reNumber();
+      renderPriceChangeBanner();
     }
 
     // Search filter: hide non-matching rows, always show checked rows
@@ -2180,23 +2215,21 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       });
     });
 
-    // Load from API: fetch flavors for the currently selected region
+    // Load from API: fetch flavors for the server's region
     $('#btn-load-flavors').on('click', function() {
-      var btn         = $(this).prop('disabled', true);
-      var regionId    = window.cmpRegionId || '';
-      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
-      // Remove previously-loaded (unsaved) rows for this region so re-fetch is a clean refresh
-      $('#flavors-table tbody tr[data-region="' + regionId + '"][data-saved="0"]').remove();
+      var btn = $(this).prop('disabled', true);
+      // Remove previously-loaded (unsaved) rows so re-fetch is a clean refresh
+      $('#flavors-table tbody tr[data-saved="0"]').remove();
       $('#btn-save-flavors').prop('disabled', true);
       $('#flavors-loading').show();
       $('#flavors-loading-text').text('Loading flavors...');
       $('#flavors-error').hide();
 
-      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId, region_id: regionId }, function(fr) {
+      $.post(moduleUrl, { action: 'load_flavors', server_id: serverId }, function(fr) {
         if (fr && fr.success && fr.flavors && fr.flavors.length) {
-          addRows(fr.flavors, regionId, regionLabel);
+          addRows(fr.flavors);
         } else {
-          $('#flavors-error').text(fr.error || 'No flavors returned for the selected region.').show();
+          $('#flavors-error').text(fr.error || 'No flavors returned.').show();
         }
       }, 'json').always(function() {
         btn.prop('disabled', false);
@@ -2228,17 +2261,19 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
       var saveBtn = $(this).prop('disabled', true);
       $('#btn-load-flavors').prop('disabled', true);
       $('#flavors-saving').show();
-      var ids = [], names = {}, prices = {}, regions = {}, specs = {}, apiNames = {};
+      var ids = [], names = {}, prices = {}, specs = {}, apiNames = {};
       $('#flavors-table tbody tr').each(function() {
         var row = $(this);
         if (row.find('.flv-check').is(':checked')) {
           var id = row.data('id');
           ids.push(id);
           names[id]    = row.find('.flv-name').val();
-          prices[id]   = row.find('.flv-price').val();
+          var perCurr = {};
+          row.find('.flv-price').each(function() {
+            perCurr[$(this).data('currency')] = $(this).val();
+          });
+          prices[id]   = perCurr;
           apiNames[id] = $.trim(row.find('.flv-api-name').text());
-          var rId = row.attr('data-region') || '';
-          if (rId) regions[id] = rId;
           // Persist vCPU/RAM from the rendered cells so they survive reload.
           var vcpuText = $.trim(row.find('.flv-vcpu').text());
           var ramText  = $.trim(row.find('.flv-ram').text());
@@ -2252,7 +2287,6 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl): voi
         $.post(moduleUrl, { action: 'save_flavors',          server_id: serverId, selected_flavors: ids }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_names',     server_id: serverId, names: names          }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_prices',    server_id: serverId, prices: prices        }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_flavor_regions',   server_id: serverId, regions: regions      }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_specs',     server_id: serverId, specs: specs          }, null, 'json'),
         $.post(moduleUrl, { action: 'save_flavor_api_names', server_id: serverId, api_names: apiNames   }, null, 'json')
       ).always(function() {
@@ -2279,59 +2313,90 @@ function cloudpe_cmp_admin_render_disks(int $serverId, string $moduleUrl): void
 {
   $savedDisks = cloudpe_cmp_admin_get_setting($serverId, 'disk_sizes', []);
   $savedDisks = is_array($savedDisks) ? $savedDisks : [];
+
+  $currencies  = Capsule::table('tblcurrencies')
+    ->whereIn('code', ['INR', 'USD'])
+    ->orderBy('id')
+    ->get(['id', 'code']);
+  $firstCurrId = $currencies->count() ? (int)$currencies->first()->id : 0;
   ?>
   <div class="cmp-section">
     <h4>Disk Size Options</h4>
     <p class="text-muted">Define the disk size options customers can choose from when ordering.</p>
+
+    <div class="cmp-toolbar">
+      <button class="btn btn-default btn-sm" id="btn-add-disk">
+        <i class="fa fa-plus"></i> Add Disk Option
+      </button>
+      <span id="disks-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> <span id="disks-loading-text">Saving configuration...</span></span>
+      <span class="cmp-spacer"></span>
+      <span id="disks-save-msg" class="cmp-save-msg" style="display:none;"></span>
+      <button class="btn btn-success" id="btn-save-disks">
+        <i class="fa fa-save"></i> Save Disk Sizes
+      </button>
+    </div>
 
     <table class="table table-bordered cmp-resource-table" id="disks-table">
       <thead>
         <tr>
           <th>Size (GB)</th>
           <th>Display Label</th>
-          <th>Monthly Price</th>
+          <?php foreach ($currencies as $c): ?>
+          <th><?php echo htmlspecialchars($c->code); ?> /mo</th>
+          <?php endforeach; ?>
           <th>Action</th>
         </tr>
       </thead>
       <tbody>
-        <?php foreach ($savedDisks as $disk): ?>
+        <?php foreach ($savedDisks as $disk):
+          $priceEntry = $disk['prices'] ?? null;
+          $legacy     = $disk['price']  ?? null;
+        ?>
         <tr>
           <td><input type="number" min="1" class="form-control input-sm disk-size"
                value="<?php echo (int)($disk['size_gb'] ?? 0); ?>"></td>
           <td><input type="text" class="form-control input-sm disk-label"
                value="<?php echo htmlspecialchars($disk['label'] ?? ''); ?>"></td>
+          <?php foreach ($currencies as $c):
+            if (is_array($priceEntry)) {
+              $cellVal = $priceEntry[$c->id] ?? $priceEntry[(string)$c->id] ?? '0';
+            } else {
+              $cellVal = ((int)$c->id === $firstCurrId) ? ($legacy ?? '0') : '0';
+            }
+          ?>
           <td><input type="number" step="0.01" min="0" class="form-control input-sm disk-price"
-               value="<?php echo htmlspecialchars($disk['price'] ?? '0'); ?>"></td>
+               data-currency="<?php echo (int)$c->id; ?>"
+               value="<?php echo htmlspecialchars((string)$cellVal); ?>"></td>
+          <?php endforeach; ?>
           <td><button class="btn btn-xs btn-danger btn-remove-disk">Remove</button></td>
         </tr>
         <?php endforeach; ?>
       </tbody>
     </table>
 
-    <button class="btn btn-default btn-sm" id="btn-add-disk">
-      <i class="fa fa-plus"></i> Add Disk Option
-    </button>
-    &nbsp;
-    <button class="btn btn-success" id="btn-save-disks">
-      <i class="fa fa-save"></i> Save Disk Sizes
-    </button>
-    <span id="disks-loading" style="display:none; margin-left:10px;">
-      <i class="fa fa-spinner fa-spin"></i> <span id="disks-loading-text">Saving configuration...</span>
-    </span>
-    <div id="disks-save-msg" class="cmp-alert" style="margin-top:10px;"></div>
   </div>
 
   <script>
   (function() {
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
+    var currencies = <?php echo json_encode($currencies->toArray()); ?>;
+
+    function priceCellsHtml() {
+      var html = '';
+      currencies.forEach(function(c) {
+        html += '<td><input type="number" step="0.01" min="0" class="form-control input-sm disk-price" data-currency="' +
+                parseInt(c.id) + '" value="0"></td>';
+      });
+      return html;
+    }
 
     $('#btn-add-disk').on('click', function() {
       $('#disks-table tbody').append(
         '<tr>' +
         '<td><input type="number" min="1" class="form-control input-sm disk-size" placeholder="e.g. 50"></td>' +
         '<td><input type="text" class="form-control input-sm disk-label" placeholder="e.g. 50 GB SSD"></td>' +
-        '<td><input type="number" step="0.01" min="0" class="form-control input-sm disk-price" value="0"></td>' +
+        priceCellsHtml() +
         '<td><button class="btn btn-xs btn-danger btn-remove-disk">Remove</button></td>' +
         '</tr>'
       );
@@ -2350,146 +2415,26 @@ function cloudpe_cmp_admin_render_disks(int $serverId, string $moduleUrl): void
       $('#disks-table tbody tr').each(function() {
         var size  = parseInt($(this).find('.disk-size').val());
         var label = $(this).find('.disk-label').val().trim();
-        var price = parseFloat($(this).find('.disk-price').val()) || 0;
+        var prices = {};
+        $(this).find('.disk-price').each(function() {
+          prices[$(this).data('currency')] = parseFloat($(this).val()) || 0;
+        });
         if (size > 0) {
-          disks.push({ size_gb: size, label: label || (size + ' GB'), price: price });
+          disks.push({ size_gb: size, label: label || (size + ' GB'), prices: prices });
         }
       });
 
       $.post(moduleUrl, { action: 'save_disks', server_id: serverId, disks: disks }, function(resp) {
         var msg = $('#disks-save-msg');
         if (resp.success) {
-          msg.text('Disk sizes saved successfully.').removeClass('alert-danger').addClass('alert alert-success').show();
+          msg.text('Disk sizes saved successfully.').removeClass('error').show();
         } else {
-          msg.text(resp.message || 'Failed to save disk sizes.').removeClass('alert-success').addClass('alert alert-danger').show();
+          msg.text(resp.message || 'Failed to save disk sizes.').addClass('error').show();
         }
-        setTimeout(function() { msg.hide(); }, 3000);
+        setTimeout(function() { msg.fadeOut(); }, 3000);
       }, 'json').always(function() {
         saveBtn.prop('disabled', false);
         $('#disks-loading').hide();
-      });
-    });
-  }());
-  </script>
-  <?php
-}
-
-/**
- * Render the Additional tab.
- *
- * Two global dropdowns: Default Region and Default Project. Clients cannot
- * pick a region/project on the order form — admin sets these once, and
- * provisioning uses them for every VM created against this server.
- *
- * @param int    $serverId  Active server ID
- * @param string $moduleUrl Base module URL
- */
-function cloudpe_cmp_admin_render_additional(int $serverId, string $moduleUrl): void
-{
-  $defaultRegion  = (string)cloudpe_cmp_admin_get_setting($serverId, 'default_region',  '');
-  $defaultProject = (string)cloudpe_cmp_admin_get_setting($serverId, 'default_project', '');
-  ?>
-  <div class="cmp-section">
-    <div class="cmp-toolbar">
-      <span id="additional-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading projects...</span>
-      <span class="cmp-spacer"></span>
-      <span id="additional-save-msg" class="cmp-save-msg" style="display:none;"></span>
-      <button class="btn btn-success" id="btn-save-additional">
-        <i class="fa fa-save"></i> Save Configuration
-      </button>
-    </div>
-    <div id="additional-error" class="alert alert-danger" style="display:none;"></div>
-
-    <div class="cmp-table-wrap">
-    <table class="table table-bordered cmp-resource-table" id="projects-table">
-      <thead>
-        <tr>
-          <th style="width:32px;"></th>
-          <th>Region</th>
-          <th>Project</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td colspan="3" class="text-muted text-center">Loading...</td></tr>
-      </tbody>
-    </table>
-    </div>
-  </div>
-
-  <script>
-  (function() {
-    var serverId       = <?php echo $serverId; ?>;
-    var moduleUrl      = '<?php echo $moduleUrl; ?>';
-    var defaultProject = <?php echo json_encode($defaultProject); ?>;
-    var defaultRegion  = <?php echo json_encode($defaultRegion); ?>;
-
-    function esc(s) { return $('<span>').text(s).html(); }
-
-    function loadProjects() {
-      var regionId    = window.cmpRegionId || '';
-      var regionLabel = window.cmpRegions[regionId] || regionId || '—';
-      $('#additional-loading').show();
-      $('#additional-error').hide();
-
-      $.post(moduleUrl, { action: 'load_projects', server_id: serverId, region_id: regionId }, function(pData) {
-        $('#additional-loading').hide();
-        var projects = (pData && pData.success) ? (pData.projects || []) : [];
-        var $tbody = $('#projects-table tbody').empty();
-
-        if (!projects.length) {
-          $tbody.append('<tr><td colspan="3" class="text-muted text-center">No projects found for this region.</td></tr>');
-          return;
-        }
-
-        projects.forEach(function(p) {
-          var pRegionId   = p.region_id || regionId;
-          var pRegionName = window.cmpRegions[pRegionId] || pRegionId || regionLabel;
-          var isChecked   = (p.id === defaultProject && pRegionId === defaultRegion);
-          $tbody.append(
-            '<tr data-project-id="' + esc(p.id) + '" data-region-id="' + esc(pRegionId) + '">' +
-            '<td><input type="radio" name="default_project" value="' + esc(p.id) + '"' + (isChecked ? ' checked' : '') + '></td>' +
-            '<td>' + esc(pRegionName) + '</td>' +
-            '<td>' + esc(p.name || p.id) + '</td>' +
-            '</tr>'
-          );
-        });
-      }, 'json').fail(function() {
-        $('#additional-loading').hide();
-        $('#additional-error').text('Failed to load projects. Check server connectivity.').show();
-      });
-    }
-
-    // Load after global regions are ready (ensures cmpRegionId is set), reload on region change
-    $(document).on('cmp:regions-loaded', loadProjects);
-    $('#cmp-region-select').on('change', loadProjects);
-
-    $('#btn-save-additional').on('click', function() {
-      var btn = $(this).prop('disabled', true);
-      $('#additional-save-msg').hide();
-
-      var $checked = $('#projects-table tbody input[type="radio"]:checked');
-      var project  = $checked.val() || '';
-      var region   = $checked.closest('tr').data('region-id') || '';
-
-      $.post(moduleUrl, {
-        action:          'save_default_region_project',
-        server_id:       serverId,
-        default_region:  region,
-        default_project: project,
-      }, function(resp) {
-        btn.prop('disabled', false);
-        defaultProject = project;
-        defaultRegion  = region;
-        var msg = $('#additional-save-msg');
-        if (resp.success) {
-          msg.text(resp.message || 'Saved.').removeClass('error').show();
-        } else {
-          msg.text(resp.error || 'Save failed.').addClass('error').show();
-        }
-        setTimeout(function() { msg.fadeOut(); }, 3000);
-      }, 'json').fail(function() {
-        btn.prop('disabled', false);
-        $('#additional-save-msg').text('Request failed.').addClass('error').show();
       });
     });
   }());
@@ -2514,7 +2459,6 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
 {
   $savedProjects  = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
   $projectNames   = (array)cloudpe_cmp_admin_get_setting($serverId, 'project_names', []);
-  $projectRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'project_regions', []);
   ?>
   <div class="cmp-section">
     <h4>Projects</h4>
@@ -2539,7 +2483,6 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-projects" title="Select/deselect all"></th>
           <th>Name</th>
-          <th>Region</th>
           <th>Project ID</th>
           <th>Display Name</th>
         </tr>
@@ -2547,13 +2490,11 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
       <tbody>
         <?php foreach ($savedProjects as $i => $projId):
           $displayName = $projectNames[$projId] ?? $projId;
-          $projRegion  = $projectRegions[$projId] ?? '—';
         ?>
-        <tr data-id="<?php echo htmlspecialchars($projId); ?>" data-region="<?php echo htmlspecialchars($projectRegions[$projId] ?? ''); ?>">
+        <tr data-id="<?php echo htmlspecialchars($projId); ?>">
           <td class="row-num"><?php echo $i + 1; ?></td>
           <td><input type="checkbox" class="proj-check" checked></td>
           <td class="proj-api-name"><?php echo htmlspecialchars($displayName); ?></td>
-          <td class="proj-region text-muted" style="white-space:nowrap;"><?php echo htmlspecialchars($projRegion); ?></td>
           <td><small class="text-muted"><?php echo htmlspecialchars($projId); ?></small></td>
           <td><input type="text" class="form-control input-sm proj-name"
                value="<?php echo htmlspecialchars($displayName); ?>"></td>
@@ -2574,19 +2515,6 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     var moduleUrl       = '<?php echo $moduleUrl; ?>';
     var savedProjIds    = <?php echo json_encode(array_values($savedProjects)); ?>;
     var savedNames      = <?php echo json_encode((object)($projectNames ?: new stdClass())); ?>;
-    var savedProjRegions = <?php echo json_encode((object)($projectRegions ?: new stdClass())); ?>;
-    var regionNames     = {}; // id -> display name
-
-    // Background: load regions to resolve saved region IDs to names
-    $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(resp) {
-      if (resp.success && resp.regions) {
-        $.each(resp.regions, function(i, r) { regionNames[r.id] = r.name; });
-        $('#projects-table tbody tr').each(function() {
-          var rId = $(this).attr('data-region') || '';
-          if (rId && regionNames[rId]) $(this).find('.proj-region').text(regionNames[rId]);
-        });
-      }
-    }, 'json');
 
     function reNumber() {
       $('#projects-table tbody tr').each(function(i) { $(this).find('.row-num').text(i + 1); });
@@ -2624,15 +2552,12 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
 
         $.each(resp.projects, function(i, p) {
           if (existingIds.indexOf(String(p.id)) !== -1) return;
-          var isSaved  = savedProjIds.indexOf(p.id) !== -1;
-          var rId      = p.region_id || p.region || '';
-          var rLabel   = (rId && regionNames[rId]) ? regionNames[rId] : (rId || '—');
-          var row = $('<tr>').attr('data-id', p.id).attr('data-region', rId);
+          var isSaved = savedProjIds.indexOf(p.id) !== -1;
+          var row = $('<tr>').attr('data-id', p.id);
           row.html(
             '<td class="row-num"></td>' +
             '<td><input type="checkbox" class="proj-check"' + (isSaved ? ' checked' : '') + '></td>' +
             '<td class="proj-api-name">' + $('<span>').text(p.name).html() + '</td>' +
-            '<td class="proj-region text-muted" style="white-space:nowrap;">' + $('<span>').text(rLabel).html() + '</td>' +
             '<td><small class="text-muted">' + $('<span>').text(p.id).html() + '</small></td>' +
             '<td><input type="text" class="form-control input-sm proj-name" value="' +
               $('<span>').text(savedNames[p.id] || p.name).html() + '"></td>'
@@ -2667,22 +2592,19 @@ function cloudpe_cmp_admin_render_projects(int $serverId, string $moduleUrl): vo
     });
 
     $('#btn-save-projects').on('click', function() {
-      var ids = [], names = {}, regions = {};
+      var ids = [], names = {};
       $('#projects-table tbody tr').each(function() {
         var row = $(this);
         if (row.find('.proj-check').is(':checked')) {
           var id = row.data('id');
           ids.push(id);
           names[id] = row.find('.proj-name').val();
-          var rId = row.attr('data-region') || '';
-          if (rId) regions[id] = rId;
         }
       });
 
       $.when(
-        $.post(moduleUrl, { action: 'save_projects',        server_id: serverId, selected_projects: ids }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_project_names',   server_id: serverId, names: names           }, null, 'json'),
-        $.post(moduleUrl, { action: 'save_project_regions', server_id: serverId, regions: regions       }, null, 'json')
+        $.post(moduleUrl, { action: 'save_projects',      server_id: serverId, selected_projects: ids }, null, 'json'),
+        $.post(moduleUrl, { action: 'save_project_names', server_id: serverId, names: names           }, null, 'json')
       ).always(function() {
         savedProjIds = ids;
         $('#projects-save-msg').text('Project configuration saved.').removeClass('alert-danger').addClass('alert alert-success').show();
@@ -2819,8 +2741,8 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
       var btn = $(this).prop('disabled', true);
       $('#sgs-loading').show();
       $('#sgs-error').hide();
-      // Load without region filter — security groups are project-scoped
-      $.post(moduleUrl, { action: 'load_security_groups', server_id: serverId, project_id: projectId, region_id: '' }, function(resp) {
+      // Security groups are project-scoped; region is implicit to the server
+      $.post(moduleUrl, { action: 'load_security_groups', server_id: serverId, project_id: projectId }, function(resp) {
         btn.prop('disabled', false);
         $('#sgs-loading').hide();
         if (!resp.success) {
@@ -2918,7 +2840,7 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
   ?>
   <div class="cmp-section">
     <h4>Storage Policies (Volume Types)</h4>
-    <p class="text-muted">Volume types define the storage backend (e.g. SSD, NVMe). Loads from all regions automatically.</p>
+    <p class="text-muted">Volume types define the storage backend (e.g. SSD, NVMe).</p>
     <div class="cmp-toolbar">
       <button class="btn btn-primary" id="btn-load-vtypes">
         <i class="fa fa-refresh"></i> Load from API
@@ -2961,7 +2883,7 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
     </div>
 
     <?php if (empty($savedTypes)): ?>
-    <p class="text-muted">No storage policies configured yet. Click <strong>Load from API</strong> to fetch available volume types from all regions.</p>
+    <p class="text-muted">No storage policies configured yet. Click <strong>Load from API</strong> to fetch available volume types.</p>
     <?php endif; ?>
   </div>
 
@@ -3008,52 +2930,26 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
       });
     });
 
-    // Load from API: fetch all regions, then load volume types per region
+    // Load from API: fetch volume types for the server's region
     $('#btn-load-vtypes').on('click', function() {
       var btn = $(this).prop('disabled', true);
       $('#btn-save-vtypes').prop('disabled', true);
       $('#vtypes-loading').show();
-      $('#vtypes-loading-text').text('Fetching regions...');
+      $('#vtypes-loading-text').text('Loading...');
       $('#vtypes-error').hide();
 
-      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: 'vm' }, function(regResp) {
-        var regions = (regResp.success && regResp.regions && regResp.regions.length)
-          ? regResp.regions : [];
-
-        if (regions.length === 0) {
-          btn.prop('disabled', false);
-          $('#btn-save-vtypes').prop('disabled', false);
-          $('#vtypes-loading').hide();
-          $('#vtypes-error').text('No regions found. Cannot load volume types without a region.').show();
-          return;
+      $.post(moduleUrl, { action: 'load_volume_types', server_id: serverId }, function(resp) {
+        if (resp.success && resp.volume_types && resp.volume_types.length) {
+          addVtypeRows(resp.volume_types);
+        } else {
+          $('#vtypes-error').text(resp.error || 'No volume types returned.').show();
         }
-
-        var total = regions.length, done = 0, anySuccess = false;
-
-        $.each(regions, function(ri, region) {
-          $.post(moduleUrl, { action: 'load_volume_types', server_id: serverId, region_id: region.id }, function(resp) {
-            if (resp.success && resp.volume_types && resp.volume_types.length) {
-              anySuccess = true;
-              addVtypeRows(resp.volume_types);
-            }
-          }, 'json').always(function() {
-            done++;
-            $('#vtypes-loading-text').text('Fetching volume types from region (' + done + '/' + total + ')...');
-            if (done === total) {
-              btn.prop('disabled', false);
-              $('#btn-save-vtypes').prop('disabled', false);
-              $('#vtypes-loading').hide();
-              if (!anySuccess) {
-                $('#vtypes-error').text('No volume types returned from any region.').show();
-              }
-            }
-          });
-        });
       }, 'json').fail(function() {
+        $('#vtypes-error').text('Request failed. Check server connectivity.').show();
+      }).always(function() {
         btn.prop('disabled', false);
         $('#btn-save-vtypes').prop('disabled', false);
         $('#vtypes-loading').hide();
-        $('#vtypes-error').text('Failed to fetch regions. Check server connectivity.').show();
       });
     });
 
@@ -3122,6 +3018,11 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
   $savedFlavors = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
   $savedDisks   = cloudpe_cmp_admin_get_setting($serverId, 'disk_sizes', []);
 
+  $cmpProducts = Capsule::table('tblproducts')
+    ->where('servertype', 'cloudpe_cmp')
+    ->orderBy('name')
+    ->get(['id', 'name']);
+
   // Fetch configurable option groups that are linked to products using this module
   $existingGroups = Capsule::table('tblproductconfiggroups as g')
     ->join('tblproductconfiglinks as l', 'l.gid', '=', 'g.id')
@@ -3141,37 +3042,67 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     </p>
 
     <!-- Create new group -->
-    <div class="panel panel-default" style="max-width:640px; margin-bottom:20px;">
+    <div class="panel panel-default" style="margin-bottom:20px;">
       <div class="panel-heading"><h4 class="panel-title">Create New Group</h4></div>
       <div class="panel-body">
-        <h5>Options to be created (in this order):</h5>
-        <ol>
-          <li><strong>Operating System</strong> — <strong><?php echo count((array)$savedImages); ?></strong> option(s)
-            <?php if (empty($savedImages)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=images&server_id=<?php echo $serverId; ?>">configure images first</a></span><?php endif; ?>
-          </li>
-          <li><strong>Server Size</strong> (grouped) — <strong><?php echo count((array)$savedFlavors); ?></strong> option(s)
-            <?php if (empty($savedFlavors)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=flavors&server_id=<?php echo $serverId; ?>">configure flavors first</a></span><?php endif; ?>
-          </li>
-          <li><strong>Disk Space</strong> — <strong><?php echo count((array)$savedDisks); ?></strong> option(s)
-            <?php if (empty($savedDisks)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=disks&server_id=<?php echo $serverId; ?>">configure disk sizes first</a></span><?php endif; ?>
-          </li>
-        </ol>
-
         <?php if (empty($savedImages) && empty($savedFlavors) && empty($savedDisks)): ?>
         <div class="alert alert-warning">
           No resources are configured yet. Please configure images, flavors, and disk sizes before creating a group.
         </div>
         <?php else: ?>
-        <hr>
-        <div class="form-group">
-          <label for="group-name">Group Name</label>
-          <input type="text" id="group-name" class="form-control" value="CloudPe CMP Options"
-                 placeholder="e.g. CloudPe VM Options">
-        </div>
-        <button class="btn btn-primary" id="btn-create-group">
-          <i class="fa fa-plus-circle"></i> Create Group
-        </button>
-        <div id="create-group-msg" style="display:none; margin-top:10px;"></div>
+        <form id="create-group-form">
+          <div class="form-group">
+            <label for="group-name">Group Name</label>
+            <input type="text" id="group-name" name="group_name" class="form-control"
+                   placeholder="e.g. Linux VPS Options" required>
+          </div>
+
+          <div class="form-group">
+            <label>Link to Products</label>
+            <button type="button" class="btn btn-xs btn-default" id="cg-select-all">Select All</button>
+            <button type="button" class="btn btn-xs btn-default" id="cg-select-none">Select None</button>
+            <div style="max-height:200px; overflow-y:auto; border:1px solid #ddd; padding:10px; margin-top:5px;">
+              <?php if (count($cmpProducts) === 0): ?>
+                <p class="text-muted" style="margin:0;">No CloudPe CMP products found. Create a product first under <strong>Products/Services</strong>.</p>
+              <?php else: foreach ($cmpProducts as $p): ?>
+                <label style="display:block; font-weight:normal;">
+                  <input type="checkbox" name="products" value="<?php echo (int)$p->id; ?>">
+                  <?php echo htmlspecialchars($p->name); ?>
+                </label>
+              <?php endforeach; endif; ?>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Include Options</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_os" checked>
+              Operating System (<?php echo count((array)$savedImages); ?> image<?php echo count((array)$savedImages) === 1 ? '' : 's'; ?>)</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_size" checked>
+              Server Size (<?php echo count((array)$savedFlavors); ?> flavor<?php echo count((array)$savedFlavors) === 1 ? '' : 's'; ?>)</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_disk" checked>
+              Disk Space (<?php echo count((array)$savedDisks); ?> size<?php echo count((array)$savedDisks) === 1 ? '' : 's'; ?>)</label>
+          </div>
+
+          <div class="form-group">
+            <label>Billing Cycle Multipliers (from monthly)</label>
+            <div class="row">
+              <div class="col-md-2"><label class="small">Quarterly</label><input type="number" step="0.1" name="mult_q" class="form-control input-sm" value="3"></div>
+              <div class="col-md-2"><label class="small">Semi-Annual</label><input type="number" step="0.1" name="mult_s" class="form-control input-sm" value="6"></div>
+              <div class="col-md-2"><label class="small">Annual</label><input type="number" step="0.1" name="mult_a" class="form-control input-sm" value="12"></div>
+              <div class="col-md-2"><label class="small">Biennial</label><input type="number" step="0.1" name="mult_b" class="form-control input-sm" value="24"></div>
+              <div class="col-md-2"><label class="small">Triennial</label><input type="number" step="0.1" name="mult_t" class="form-control input-sm" value="36"></div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-success" id="btn-create-group">
+            <i class="fa fa-plus-circle"></i> Create Configurable Options Group
+          </button>
+          <button type="button" class="btn btn-warning" id="btn-repair-data">
+            <i class="fa fa-wrench"></i> Repair Data
+          </button>
+          <div id="create-group-msg" style="display:none; margin-top:10px;"></div>
+          <div id="repair-result" style="margin-top:10px;"></div>
+        </form>
         <?php endif; ?>
       </div>
     </div>
@@ -3180,31 +3111,55 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     <?php if (!empty((array)$existingGroups)): ?>
     <div class="panel panel-default" style="margin-bottom:20px;">
       <div class="panel-heading">
-        <h4 class="panel-title">Existing Config Groups
+        <h4 class="panel-title">
+          Existing Configurable Option Groups
           <a href="configproductoptions.php" target="_blank" class="btn btn-xs btn-default pull-right">
             <i class="fa fa-external-link"></i> View all
           </a>
         </h4>
       </div>
-      <table class="table table-bordered" style="margin-bottom:0;">
+      <style>
+        #cmp-groups-table tbody tr { cursor: pointer; }
+        #cmp-groups-table tbody tr:hover { background-color: #f5f5f5; }
+      </style>
+      <table id="cmp-groups-table" class="table table-striped" style="margin-bottom:0; table-layout:fixed; width:100%;"
+             title="Click a row to edit the group">
+        <colgroup>
+          <col style="width:60px;">
+          <col>
+          <col style="width:120px;">
+          <col style="width:160px;">
+        </colgroup>
         <thead>
-          <tr><th>#</th><th>Group Name</th><th>Actions</th></tr>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Options</th>
+            <th>Linked Products</th>
+          </tr>
         </thead>
         <tbody>
-          <?php foreach ($existingGroups as $i => $grp): ?>
-          <tr>
-            <td><?php echo $i + 1; ?></td>
+          <?php foreach ($existingGroups as $grp):
+            $optionCount = Capsule::table('tblproductconfigoptions')->where('gid', $grp->id)->count();
+            $linkedCount = Capsule::table('tblproductconfiglinks')->where('gid', $grp->id)->count();
+            $groupUrl    = 'configproductoptions.php?action=managegroup&id=' . (int)$grp->id;
+          ?>
+          <tr data-href="<?php echo htmlspecialchars($groupUrl); ?>">
+            <td><?php echo (int)$grp->id; ?></td>
             <td><?php echo htmlspecialchars($grp->name); ?></td>
-            <td>
-              <a href="configproductoptions.php?action=managegroup&id=<?php echo (int)$grp->id; ?>" target="_blank"
-                 class="btn btn-xs btn-default">
-                <i class="fa fa-edit"></i> Edit
-              </a>
-            </td>
+            <td><?php echo (int)$optionCount; ?></td>
+            <td><?php echo (int)$linkedCount; ?></td>
           </tr>
           <?php endforeach; ?>
         </tbody>
       </table>
+      <script>
+        (function() {
+          $('#cmp-groups-table tbody').on('click', 'tr[data-href]', function() {
+            window.open($(this).data('href'), '_blank');
+          });
+        }());
+      </script>
     </div>
     <?php endif; ?>
   </div>
@@ -3214,29 +3169,78 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
 
-    $('#btn-create-group').on('click', function() {
+    $('#cg-select-all').on('click', function()  { $('input[name="products"]').prop('checked', true);  });
+    $('#cg-select-none').on('click', function() { $('input[name="products"]').prop('checked', false); });
+
+    $('#btn-repair-data').on('click', function() {
+      if (!confirm('This will repair stored settings by fixing Unicode/HTML-entity quote characters. Continue?')) return;
+      var btn = $(this).prop('disabled', true);
+      $('#repair-result').html('<p><i class="fa fa-spinner fa-spin"></i> Repairing data...</p>');
+      $.post(moduleUrl, { action: 'repair_settings', server_id: serverId }, function(r) {
+        btn.prop('disabled', false);
+        var html = '';
+        if (r.success) {
+          if ((r.repaired_count || 0) > 0) {
+            html = '<div class="alert alert-success"><i class="fa fa-check"></i> Repaired ' + r.repaired_count + ' setting(s).</div>' +
+                   '<pre style="max-height:200px; overflow:auto;">' + $('<div>').text(JSON.stringify(r.repaired, null, 2)).html() + '</pre>';
+          } else {
+            html = '<div class="alert alert-info"><i class="fa fa-info-circle"></i> No settings needed repair — all data is valid.</div>';
+          }
+        } else {
+          html = '<div class="alert alert-danger"><i class="fa fa-times"></i> ' + (r.error || r.message || 'Repair failed.') + '</div>';
+        }
+        $('#repair-result').html(html);
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#repair-result').html('<div class="alert alert-danger">Request failed.</div>');
+      });
+    });
+
+    $('#create-group-form').on('submit', function(e) {
+      e.preventDefault();
+
       var groupName = $('#group-name').val().trim();
       if (!groupName) { alert('Please enter a group name.'); return; }
 
-      $(this).prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
+      var products = [];
+      $('input[name="products"]:checked').each(function() { products.push($(this).val()); });
+      if (products.length === 0) { alert('Please select at least one product to link.'); return; }
+
+      var includeOs   = $('input[name="include_os"]').is(':checked')   ? 1 : 0;
+      var includeSize = $('input[name="include_size"]').is(':checked') ? 1 : 0;
+      var includeDisk = $('input[name="include_disk"]').is(':checked') ? 1 : 0;
+      if (!includeOs && !includeSize && !includeDisk) {
+        alert('Please include at least one option type (OS, Size, or Disk).');
+        return;
+      }
+
+      var btn = $('#btn-create-group').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
 
       $.post(moduleUrl, {
-        action:     'create_config_group',
-        server_id:  serverId,
-        group_name: groupName,
+        action:       'create_config_group',
+        server_id:    serverId,
+        group_name:   groupName,
+        products:     products,
+        include_os:   includeOs,
+        include_size: includeSize,
+        include_disk: includeDisk,
+        mult_q:       $('input[name="mult_q"]').val(),
+        mult_s:       $('input[name="mult_s"]').val(),
+        mult_a:       $('input[name="mult_a"]').val(),
+        mult_b:       $('input[name="mult_b"]').val(),
+        mult_t:       $('input[name="mult_t"]').val()
       }, function(resp) {
-        $('#btn-create-group').prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Group');
+        btn.prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Configurable Options Group');
         var msg = $('#create-group-msg');
         if (resp.success) {
           msg.html(resp.message + ' <a href="configproductoptions.php" target="_blank">View groups &rarr;</a>')
              .removeClass('alert-danger').addClass('alert alert-success').show();
-          // Reload page after short delay so new group appears in the existing list
           setTimeout(function() { location.reload(); }, 2500);
         } else {
           msg.text(resp.message || 'Failed to create group.').removeClass('alert-success').addClass('alert alert-danger').show();
         }
       }, 'json').fail(function() {
-        $('#btn-create-group').prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Group');
+        btn.prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Configurable Options Group');
         $('#create-group-msg').text('Request failed.').addClass('alert alert-danger').show();
       });
     });

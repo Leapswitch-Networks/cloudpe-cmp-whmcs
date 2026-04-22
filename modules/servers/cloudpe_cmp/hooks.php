@@ -14,67 +14,7 @@ if (!defined("WHMCS")) {
 use WHMCS\Database\Capsule;
 
 /**
- * Build the inline CSS+JS blob used to hide nameserver prefix fields
- * on configure pages for CloudPe CMP products. Returning a shared
- * builder means the client-area and admin-area hooks stay in lock-step
- * on exactly which field names / labels to hide.
- *
- * WHMCS ships several field-name variants depending on product type
- * and area:
- *   - client cart (cart.php?a=confproduct): ns1prefix, ns2prefix
- *   - older templates / some modules:       ns1, ns2
- *   - admin product edit (configproducts.php?action=edit): ns1, ns2
- *     plus separate "Nameserver 1 Prefix" / "Nameserver 2 Prefix"
- *     labels.
- * We target all of them and walk up to the nearest field wrapper so
- * both the input and its label row disappear.
- */
-function cloudpe_cmp_hide_ns_html(): string
-{
-    return <<<'HTML'
-<style>
-  /* CloudPe CMP: nuke nameserver fields in the configure UI */
-  input[name="ns1"], input[name="ns2"],
-  input[name="ns1prefix"], input[name="ns2prefix"] { display: none !important; }
-  label[for="ns1"], label[for="ns2"],
-  label[for="ns1prefix"], label[for="ns2prefix"] { display: none !important; }
-</style>
-<script>
-  (function() {
-    // Convert ns1/ns2 prefix inputs to hidden with default values.
-    // Using type="hidden" is the most reliable approach:
-    //   - the value is always submitted (no display:none gotchas)
-    //   - WHMCS server-side validation receives the value and passes
-    //   - client-side required-field checks skip hidden inputs
-    function hideNsFields() {
-      var prefixDefaults = { ns1: 'ns1', ns2: 'ns2', ns1prefix: 'ns1', ns2prefix: 'ns2' };
-      Object.keys(prefixDefaults).forEach(function(name) {
-        document.querySelectorAll('input[name="' + name + '"]').forEach(function(n) {
-          if (!n.value) n.value = prefixDefaults[name];
-          n.type = 'hidden'; // keeps value in form submission, removes from UI
-          // Also hide any visible wrapper in case a label/group lingers
-          var wrapper = n.closest('.form-group') || n.closest('tr') || n.closest('.row');
-          if (wrapper) wrapper.style.display = 'none';
-        });
-        document.querySelectorAll('label[for="' + name + '"]').forEach(function(l) {
-          var wrapper = l.closest('.form-group') || l.closest('tr') || l.closest('.row') || l.parentNode;
-          if (wrapper) wrapper.style.display = 'none';
-        });
-      });
-    }
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', hideNsFields);
-    } else {
-      hideNsFields();
-    }
-  })();
-</script>
-HTML;
-}
-
-/**
- * Decide whether the given product id is a CloudPe CMP product.
+ * True if the given WHMCS product id is a CloudPe CMP product.
  */
 function cloudpe_cmp_product_is_cmp(int $productId): bool
 {
@@ -84,64 +24,401 @@ function cloudpe_cmp_product_is_cmp(int $productId): bool
 }
 
 /**
- * Hook: Hide ns1/ns2 (and ns1prefix/ns2prefix) fields on the client
- * order configure page for CloudPe CMP products. Cloud VMs are
- * provisioned through the CMP API, so nameserver inputs are noise.
+ * Read the "Hide NS1/NS2 Prefix" module setting (configoption4) for a
+ * given product. Returns true when admins want NS fields on the cart,
+ * false when the Hide checkbox is ticked.
+ *
+ * WHMCS Type=yesno stores 'on' when ticked, '' when unticked. Default
+ * (blank / never saved) therefore means "show NS prefix", keeping
+ * existing installs unchanged.
  */
-add_hook('ClientAreaHeadOutput', 1, function ($vars) {
-    // Inject on any cart.php page and on configureproduct.php. We key
-    // off the product's servertype below, so widening the page check is
-    // safe and avoids missing cart flows that route through different
-    // filenames/actions depending on WHMCS theme/version.
-    $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
-    $page = $vars['filename'] ?? '';
-    $onCart = ($scriptName === 'cart.php') || ($page === 'cart') || ($scriptName === 'configureproduct.php');
-    if (!$onCart) {
-        return '';
-    }
+function cloudpe_cmp_product_shows_ns_prefix(int $productId): bool
+{
+    if ($productId <= 0) return true;
+    $product = Capsule::table('tblproducts')->where('id', $productId)->first();
+    if (!$product) return true;
+    $hide = strtolower(trim((string)($product->configoption4 ?? '')));
+    return $hide !== 'on';
+}
 
-    // Figure out which product is being configured. Prefer the cart
-    // index from the URL; fall back to iterating the session if
-    // missing (some cart flows don't pass "i").
-    $productId = 0;
+/**
+ * Find the CloudPe CMP product the visitor is currently configuring.
+ * Looks at cart session first (?i=<index>), then falls back to the
+ * first CMP product in the cart.
+ */
+function cloudpe_cmp_current_cart_product_id(): int
+{
     $cartIndex = $_REQUEST['i'] ?? null;
     if ($cartIndex !== null && isset($_SESSION['cart']['products'][$cartIndex]['pid'])) {
-        $productId = (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
-    } elseif (!empty($_SESSION['cart']['products']) && is_array($_SESSION['cart']['products'])) {
-        // If any product in the cart is a CMP product, inject anyway;
-        // cheaper than having a stale ns field sneak through.
+        return (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
+    }
+    if (!empty($_SESSION['cart']['products']) && is_array($_SESSION['cart']['products'])) {
         foreach ($_SESSION['cart']['products'] as $p) {
             if (!empty($p['pid']) && cloudpe_cmp_product_is_cmp((int)$p['pid'])) {
-                $productId = (int)$p['pid'];
-                break;
+                return (int)$p['pid'];
             }
         }
     }
+    return 0;
+}
 
-    if (!cloudpe_cmp_product_is_cmp($productId)) {
-        return '';
-    }
+/**
+ * Hook: hide NS1 / NS2 Prefix inputs on the cart Configure page when
+ * the product has "Show NS1/NS2 Prefix" set to No in Module Settings.
+ * Driven by the product's configoption4 value so admins can flip it
+ * per-product without editing code.
+ */
+add_hook('ClientAreaHeadOutput', 1, function ($vars) {
+    $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
+    $page = $vars['filename'] ?? '';
+    $onCart = ($scriptName === 'cart.php') || ($page === 'cart') || ($scriptName === 'configureproduct.php');
+    if (!$onCart) return '';
 
-    return cloudpe_cmp_hide_ns_html();
+    $productId = cloudpe_cmp_current_cart_product_id();
+    if (!cloudpe_cmp_product_is_cmp($productId)) return '';
+    if (cloudpe_cmp_product_shows_ns_prefix($productId)) return '';
+
+    return <<<'HTML'
+<style>
+  input[name="ns1"], input[name="ns2"],
+  input[name="ns1prefix"], input[name="ns2prefix"] { display: none !important; }
+  label[for="ns1"], label[for="ns2"],
+  label[for="ns1prefix"], label[for="ns2prefix"] { display: none !important; }
+</style>
+<script>
+(function() {
+  function hideNs() {
+    var defaults = { ns1: 'ns1', ns2: 'ns2', ns1prefix: 'ns1', ns2prefix: 'ns2' };
+    Object.keys(defaults).forEach(function(name) {
+      document.querySelectorAll('input[name="' + name + '"]').forEach(function(n) {
+        if (!n.value) n.value = defaults[name];
+        n.type = 'hidden';
+        var wrap = n.closest('.form-group') || n.closest('tr') || n.closest('.row');
+        if (wrap) wrap.style.display = 'none';
+      });
+      document.querySelectorAll('label[for="' + name + '"]').forEach(function(l) {
+        var wrap = l.closest('.form-group') || l.closest('tr') || l.closest('.row') || l.parentNode;
+        if (wrap) wrap.style.display = 'none';
+      });
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hideNs);
+  } else {
+    hideNs();
+  }
+})();
+</script>
+HTML;
 });
 
 /**
- * Hook: Hide nameserver prefix fields on the admin product-edit page
- * for CloudPe CMP products. WHMCS shows "Nameserver 1 Prefix" /
- * "Nameserver 2 Prefix" on the Details tab of every server-type
- * product; those are irrelevant for VM provisioning.
+ * Hook: on the cart Configure page for a CloudPe CMP product, show the
+ * password-policy hint under the Root Password field and block form
+ * submission until the password matches the policy. Mirrors the client-
+ * area Reset Password modal — same rules, same UX.
+ *
+ * Policy: 12+ chars, 1 upper, 1 lower, 1 digit, 1 special.
  */
-add_hook('AdminAreaHeadOutput', 1, function ($vars) {
-    // Only inject on the product-edit UI; cheap to check.
+add_hook('ClientAreaHeadOutput', 1, function ($vars) {
     $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
-    if ($scriptName !== 'configproducts.php') {
-        return '';
+    $page = $vars['filename'] ?? '';
+    $onCart = ($scriptName === 'cart.php') || ($page === 'cart') || ($scriptName === 'configureproduct.php');
+    if (!$onCart) return '';
+
+    $productId = cloudpe_cmp_current_cart_product_id();
+    if (!cloudpe_cmp_product_is_cmp($productId)) return '';
+
+    return <<<'HTML'
+<style>
+  /* Match the surrounding form inputs and give the password field breathing room. */
+  input[name="rootpassword"],
+  input[name="rootpw"] {
+    width: 100% !important;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  /* Keep the "Root Password:" label aligned with the input, not vertically
+     centered against the tall input+hint column. Covers flex (Bootstrap
+     form-group), table rows, and plain block layouts. */
+  .cmp-pw-row { align-items: flex-start !important; }
+  .cmp-pw-label-top {
+    align-self: flex-start !important;
+    vertical-align: top !important;
+    padding-top: 7px !important;
+    margin-top: 0 !important;
+  }
+  .cmp-pw-wrap { width: 100%; }
+  .cmp-pw-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #555;
+    background: #f7f7f9;
+    border: 1px solid #e1e1e8;
+    border-radius: 4px;
+    padding: 10px 12px;
+    display: none;
+  }
+  .cmp-pw-hint.cmp-pw-show { display: block; }
+  .cmp-pw-hint-title { font-weight: 600; margin-bottom: 6px; color: #333; }
+  .cmp-pw-hint-list { list-style: none; margin: 0; padding: 0; }
+  .cmp-pw-hint-list li {
+    display: flex;
+    align-items: center;
+    padding: 2px 0;
+    line-height: 1.5;
+    color: #a94442;
+  }
+  .cmp-pw-hint-list li .cmp-pw-icon {
+    display: inline-block;
+    width: 16px;
+    text-align: center;
+    margin-right: 8px;
+    font-weight: 700;
+  }
+  .cmp-pw-hint-list li.ok { color: #3c763d; }
+  .cmp-pw-hint-list li.ok .cmp-pw-icon::before  { content: "\2713"; }
+  .cmp-pw-hint-list li.bad .cmp-pw-icon::before { content: "\2715"; }
+  .cmp-pw-error {
+    color: #a94442;
+    font-size: 12px;
+    margin-top: 6px;
+    display: none;
+  }
+</style>
+<script>
+(function() {
+  var POLICY = [
+    { label: 'At least 12 characters',              test: function(p) { return p.length >= 12; } },
+    { label: 'One uppercase letter (A-Z)',          test: function(p) { return /[A-Z]/.test(p); } },
+    { label: 'One lowercase letter (a-z)',          test: function(p) { return /[a-z]/.test(p); } },
+    { label: 'One number (0-9)',                    test: function(p) { return /[0-9]/.test(p); } },
+    { label: 'One special character (!@#$%^&*...)', test: function(p) { return /[^A-Za-z0-9]/.test(p); } }
+  ];
+
+  function findRootPasswordInput() {
+    return document.querySelector('input[name="rootpassword"], input[name="rootpw"], input[name="password"][type="password"]');
+  }
+
+  function findRowContainer($input) {
+    return $input.closest('.form-group')
+        || $input.closest('tr')
+        || $input.closest('.row')
+        || $input.parentNode;
+  }
+
+  function injectHint($input) {
+    if ($input.parentNode.querySelector('.cmp-pw-hint')) return;
+
+    // Force the label to top-align with the input. WHMCS themes
+    // variously center-align the label against its row; without this
+    // the label floats to the vertical middle of input + hint.
+    var row = findRowContainer($input);
+    if (row) {
+      var labels = row.querySelectorAll('label, .control-label, td:first-child');
+      Array.prototype.forEach.call(labels, function(el) { el.classList.add('cmp-pw-label-top'); });
+      row.classList.add('cmp-pw-row');
     }
-    $productId = (int)($_REQUEST['id'] ?? 0);
-    if (!cloudpe_cmp_product_is_cmp($productId)) {
-        return '';
+
+    var box = document.createElement('div');
+    box.className = 'cmp-pw-hint';
+    var html = '<div class="cmp-pw-hint-title">Password requirements:</div>';
+    html += '<ul class="cmp-pw-hint-list">';
+    POLICY.forEach(function(r, i) {
+      html += '<li class="bad" data-i="' + i + '"><span class="cmp-pw-icon"></span><span>' + r.label + '</span></li>';
+    });
+    html += '</ul>';
+    box.innerHTML = html;
+
+    var errLine = document.createElement('div');
+    errLine.className = 'cmp-pw-error';
+    errLine.textContent = 'Password does not meet requirements.';
+
+    $input.parentNode.appendChild(box);
+    $input.parentNode.appendChild(errLine);
+  }
+
+  function evaluate($input) {
+    var pw = $input.value || '';
+    var box = $input.parentNode.querySelector('.cmp-pw-hint');
+    if (!box) return true;
+    var allOk = true;
+    POLICY.forEach(function(rule, i) {
+      var li = box.querySelector('li[data-i="' + i + '"]');
+      if (!li) return;
+      if (rule.test(pw)) { li.className = 'ok'; } else { li.className = 'bad'; allOk = false; }
+    });
+    var err = $input.parentNode.querySelector('.cmp-pw-error');
+    if (err) err.style.display = 'none';
+    updateHintVisibility($input, allOk);
+    return allOk;
+  }
+
+  // Show the hint when the field is focused, or when it's blurred but
+  // contains a password that fails the policy. Stays hidden when empty
+  // and unfocused, and hides on blur once all rules pass.
+  function updateHintVisibility($input, allOk) {
+    var box = $input.parentNode.querySelector('.cmp-pw-hint');
+    if (!box) return;
+    var focused = document.activeElement === $input;
+    var hasContent = ($input.value || '').length > 0;
+    if (focused || (hasContent && !allOk)) box.classList.add('cmp-pw-show');
+    else box.classList.remove('cmp-pw-show');
+  }
+
+  function blockIfBad($input, e) {
+    if (($input.value || '').length === 0) return false;
+    if (!evaluate($input)) {
+      if (e) { e.preventDefault(); e.stopImmediatePropagation(); }
+      var err = $input.parentNode.querySelector('.cmp-pw-error');
+      if (err) err.style.display = 'block';
+      $input.focus();
+      return true;
     }
-    return cloudpe_cmp_hide_ns_html();
+    return false;
+  }
+
+  function wire() {
+    var $input = findRootPasswordInput();
+    if (!$input) return;
+    injectHint($input);
+    $input.addEventListener('input', function() { evaluate($input); });
+    $input.addEventListener('focus', function() { evaluate($input); });
+    $input.addEventListener('blur',  function() { evaluate($input); });
+
+    // Block submission unless policy passes. Intercept both form submit
+    // (covers standard WHMCS cart forms) and clicks on any submit button
+    // anywhere on the page (covers themes that wire their own click handler
+    // on the Continue / Checkout button instead of native submit).
+    var form = $input.form;
+    if (form && !form.__cmpPwBound) {
+      form.__cmpPwBound = true;
+      form.addEventListener('submit', function(e) { blockIfBad($input, e); }, true);
+    }
+    if (!document.__cmpPwClickBound) {
+      document.__cmpPwClickBound = true;
+      document.addEventListener('click', function(e) {
+        var btn = e.target.closest('button, input[type="submit"], a.btn');
+        if (!btn) return;
+        var type = (btn.getAttribute('type') || '').toLowerCase();
+        var text = (btn.textContent || btn.value || '').toLowerCase();
+        var looksLikeSubmit = type === 'submit'
+          || /continue|checkout|complete|place\s*order/.test(text)
+          || btn.id === 'btnCompleteOrder'
+          || btn.classList.contains('btn-checkout');
+        if (!looksLikeSubmit) return;
+        var live = findRootPasswordInput();
+        if (!live || !document.body.contains(live)) return;
+        blockIfBad(live, e);
+      }, true);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+HTML;
+});
+
+/**
+ * Hook: server-side safety net for the "Show NS1/NS2 Prefix = No" case.
+ *
+ * When the admin hides NS fields, the client-side JS in our
+ * ClientAreaHeadOutput hook converts them to hidden inputs and supplies
+ * default values ('ns1' / 'ns2') before submit. If JS is disabled or
+ * blocked, the inputs stay empty and WHMCS's cart validator rejects the
+ * order. This hook backfills defaults in $_POST so submission always
+ * completes cleanly, regardless of Yes/No and regardless of JS state.
+ */
+add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
+    if (empty($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) return;
+    $anyHiddenNs = false;
+    foreach ($_SESSION['cart']['products'] as $p) {
+        $pid = (int)($p['pid'] ?? 0);
+        if (!cloudpe_cmp_product_is_cmp($pid)) continue;
+        if (!cloudpe_cmp_product_shows_ns_prefix($pid)) {
+            $anyHiddenNs = true;
+            break;
+        }
+    }
+    if (!$anyHiddenNs) return;
+    foreach (['ns1prefix' => 'ns1', 'ns2prefix' => 'ns2', 'ns1' => 'ns1', 'ns2' => 'ns2'] as $field => $default) {
+        if (empty($_POST[$field]) && empty($_REQUEST[$field])) {
+            $_POST[$field]    = $default;
+            $_REQUEST[$field] = $default;
+        }
+    }
+});
+
+/**
+ * Hook: validate the hostname entered on the cart before checkout.
+ *
+ * CloudPe CMP requires hostnames to follow RFC 1123 (letters, digits,
+ * hyphens, and dots, with no leading/trailing hyphen per label). We
+ * reject anything outside this shape up-front so the user gets a clear
+ * error on the order form instead of the module silently mutating their
+ * input (e.g. "vm-20260423.testing.com" → "vm-20260423testingcom") or
+ * CMP appending a collision suffix ("atul-test1" → "atul-test2").
+ */
+add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
+    if (empty($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) return;
+    $hasCmp = false;
+    foreach ($_SESSION['cart']['products'] as $p) {
+        if (cloudpe_cmp_product_is_cmp((int)($p['pid'] ?? 0))) { $hasCmp = true; break; }
+    }
+    if (!$hasCmp) return;
+
+    $hostname = trim((string)($_POST['hostname'] ?? $_REQUEST['hostname'] ?? ''));
+    if ($hostname === '') {
+        return ['error' => 'Hostname is required.'];
+    }
+    if (strlen($hostname) > 253) {
+        return ['error' => 'Hostname must be 253 characters or fewer.'];
+    }
+    // Each dot-separated label: alphanumeric start+end, may include
+    // hyphens in the middle, max 63 chars. Applies to plain hostnames
+    // ("vm-20260423") and FQDNs ("vm-20260423.testing.com") alike.
+    $labelRe = '/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/';
+    foreach (explode('.', $hostname) as $label) {
+        if ($label === '' || !preg_match($labelRe, $label)) {
+            return ['error' => 'Hostname "' . htmlspecialchars($hostname) . '" is invalid. Use only letters, digits, hyphens and dots; each label must start and end with a letter or digit (e.g. vm-20260423 or vm-20260423.testing.com).'];
+        }
+    }
+});
+
+/**
+ * Hook: server-side enforcement of the root password policy on checkout.
+ *
+ * Mirrors the client-side hint rules (12+ chars, 1 upper, 1 lower, 1 digit,
+ * 1 special). Returns a cart error — just like the NS prefix path — so the
+ * user is bounced back even if JS is disabled or a theme bypasses the
+ * client-side submit blocker.
+ */
+add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
+    if (empty($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) return;
+    $hasCmp = false;
+    foreach ($_SESSION['cart']['products'] as $p) {
+        if (cloudpe_cmp_product_is_cmp((int)($p['pid'] ?? 0))) { $hasCmp = true; break; }
+    }
+    if (!$hasCmp) return;
+
+    $pw = (string)($_POST['rootpassword'] ?? $_POST['rootpw'] ?? $_REQUEST['rootpassword'] ?? $_REQUEST['rootpw'] ?? '');
+    if ($pw === '') return;
+
+    $errors = [];
+    if (strlen($pw) < 12)             $errors[] = 'at least 12 characters';
+    if (!preg_match('/[A-Z]/', $pw))  $errors[] = 'an uppercase letter';
+    if (!preg_match('/[a-z]/', $pw))  $errors[] = 'a lowercase letter';
+    if (!preg_match('/[0-9]/', $pw))  $errors[] = 'a number';
+    if (!preg_match('/[^A-Za-z0-9]/', $pw)) $errors[] = 'a special character';
+
+    if ($errors) {
+        return ['error' => 'Root Password must contain ' . implode(', ', $errors) . '.'];
+    }
 });
 
 /**

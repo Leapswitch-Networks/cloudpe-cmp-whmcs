@@ -154,7 +154,23 @@ try {
             break;
 
         case 'password':
-            $newPassword = $helper->generatePassword();
+            // Accept a user-supplied password; fall back to auto-generate if blank.
+            $newPassword = trim((string)($_REQUEST['new_password'] ?? ''));
+            if ($newPassword === '') {
+                $newPassword = $helper->generatePassword();
+            } else {
+                // Enforce policy: 12+ chars, one upper, one lower, one digit, one special.
+                $policyErrors = [];
+                if (strlen($newPassword) < 12)                          $policyErrors[] = 'at least 12 characters';
+                if (!preg_match('/[A-Z]/', $newPassword))                $policyErrors[] = 'an uppercase letter';
+                if (!preg_match('/[a-z]/', $newPassword))                $policyErrors[] = 'a lowercase letter';
+                if (!preg_match('/[0-9]/', $newPassword))                $policyErrors[] = 'a number';
+                if (!preg_match('/[^A-Za-z0-9]/', $newPassword))         $policyErrors[] = 'a special character';
+                if (!empty($policyErrors)) {
+                    jsonResponse(false, 'Password must contain ' . implode(', ', $policyErrors) . '.');
+                }
+            }
+
             $result = $api->changePassword($vmId, $newPassword);
 
             if (!$result['success']) {
@@ -165,7 +181,7 @@ try {
                 'password' => encrypt($newPassword),
             ]);
 
-            jsonResponse(true, 'Password reset successfully. Reload page to view new password.');
+            jsonResponse(true, 'Password reset successfully.', ['password' => $newPassword]);
             break;
 
         case 'console_output':
