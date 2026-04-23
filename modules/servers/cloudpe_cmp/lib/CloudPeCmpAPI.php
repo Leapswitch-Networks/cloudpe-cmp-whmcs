@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.2-beta.1
+ * @version 1.1.2-beta.2
  */
 
 class CloudPeCmpAPI
@@ -631,6 +631,8 @@ class CloudPeCmpAPI
             if (!empty($regionId)) {
                 $params['region_id'] = $regionId;
             }
+            // Match cloudpe-cmp dashboard: only grouped, active images.
+            $params['grouped'] = 'true';
 
             $query = http_build_query($params);
             $url = '/images' . ($query ? '?' . $query : '');

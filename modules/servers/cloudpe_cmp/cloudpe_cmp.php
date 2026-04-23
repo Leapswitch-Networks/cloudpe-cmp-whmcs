@@ -419,14 +419,12 @@ function cloudpe_cmp_CreateAccount(array $params): string
         $ipVersion        = in_array($params['configoption10'] ?? '', ['ipv4', 'ipv6', 'both'], true)
                             ? $params['configoption10'] : 'ipv4';
 
-        // Project ID resolution: per-product override > admin default project > server-level Access Hash
+        // Project ID resolution: product Module Settings "Project" > server-level Access Hash
         $serverId       = (int)($params['serverid'] ?? 0);
-        $defaultProject = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_project')));
-        $defaultRegion  = cloudpe_cmp_sanitizeUuid(trim((string)cloudpe_cmp_getAdminSetting($serverId, 'default_region')));
         $flavorRegions  = cloudpe_cmp_getAdminSetting($serverId, 'flavor_regions') ?: [];
         $projectId = $projectOverride !== ''
             ? $projectOverride
-            : ($defaultProject !== '' ? $defaultProject : cloudpe_cmp_sanitizeUuid(trim($params['serveraccesshash'] ?? '')));
+            : cloudpe_cmp_sanitizeUuid(trim($params['serveraccesshash'] ?? ''));
 
         // Get flavor from Configurable Options or default
         $flavorId = trim(
@@ -490,13 +488,11 @@ function cloudpe_cmp_CreateAccount(array $params): string
             $instanceData['network_id'] = $networkId;
         }
 
-        // Region: flavor's saved region takes priority so the flavor is always
-        // submitted to the region it was validated against. Falls back to the
-        // admin default_region, then omits region_id entirely.
-        $flavorRegion  = cloudpe_cmp_sanitizeUuid(trim((string)($flavorRegions[$flavorId] ?? '')));
-        $effectiveRegion = $flavorRegion ?: $defaultRegion;
-        if (!empty($effectiveRegion)) {
-            $instanceData['region_id'] = $effectiveRegion;
+        // Region: flavor's saved region takes priority. If unset, omit region_id
+        // entirely and let the CMP API use the project's default region.
+        $flavorRegion = cloudpe_cmp_sanitizeUuid(trim((string)($flavorRegions[$flavorId] ?? '')));
+        if (!empty($flavorRegion)) {
+            $instanceData['region_id'] = $flavorRegion;
         }
 
         if (!empty($ipVersion) && $ipVersion !== 'ipv4') {
