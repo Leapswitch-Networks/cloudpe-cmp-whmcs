@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.2-beta.2');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.2-beta.3');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -538,6 +538,24 @@ function cloudpe_cmp_admin_cleanup_temp(string $dir): void
 // ---------------------------------------------------------------------------
 
 /**
+ * Replace Unicode/HTML-entity smart-quotes with plain ASCII quotes so JSON decoding works.
+ */
+function cloudpe_cmp_admin_sanitize_quotes(?string $value): ?string
+{
+  if ($value === null || $value === '') return $value;
+  $map = [
+    "\xE2\x80\x98" => "'", "\xE2\x80\x99" => "'",
+    "\xE2\x80\x9C" => '"', "\xE2\x80\x9D" => '"',
+    '&#8216;' => "'", '&#8217;' => "'",
+    '&#8220;' => '"', '&#8221;' => '"',
+    '&lsquo;' => "'", '&rsquo;' => "'",
+    '&ldquo;' => '"', '&rdquo;' => '"',
+    '&quot;'  => '"', '&apos;' => "'",
+  ];
+  return strtr($value, $map);
+}
+
+/**
  * Persist a setting value for a server.
  *
  * @param int    $serverId WHMCS server ID
@@ -1049,6 +1067,32 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
     return ['success' => false, 'message' => 'No server selected.'];
   }
 
+  // Products to link
+  $productIds = [];
+  $rawProducts = $params['products'] ?? [];
+  if (is_array($rawProducts)) {
+    foreach ($rawProducts as $pid) {
+      $pid = (int)$pid;
+      if ($pid > 0) $productIds[] = $pid;
+    }
+  }
+  if (empty($productIds)) {
+    return ['success' => false, 'message' => 'At least one product must be selected.'];
+  }
+
+  $includeOs   = !empty($params['include_os']);
+  $includeSize = !empty($params['include_size']);
+  $includeDisk = !empty($params['include_disk']);
+  if (!$includeOs && !$includeSize && !$includeDisk) {
+    return ['success' => false, 'message' => 'At least one option type (OS, Size, or Disk) must be selected.'];
+  }
+
+  $multQ = (float)($params['mult_q'] ?? 3);
+  $multS = (float)($params['mult_s'] ?? 6);
+  $multA = (float)($params['mult_a'] ?? 12);
+  $multB = (float)($params['mult_b'] ?? 24);
+  $multT = (float)($params['mult_t'] ?? 36);
+
   // Load saved images
   $savedImages  = cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
   $imageNames   = cloudpe_cmp_admin_get_setting($serverId, 'image_names', []);
@@ -1122,7 +1166,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
     $sortOrder = 0;
 
     // --- Operating System ---
-    if (!empty($savedImages)) {
+    if ($includeOs && !empty($savedImages)) {
       $osOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'         => $groupId,
         'optionname'  => 'Operating System',
@@ -1161,19 +1205,19 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'asetupfee' => 0,
             'bsetupfee' => 0,
             'tsetupfee' => 0,
-            'monthly'   => $price,
-            'quarterly' => 0,
-            'semiannually' => 0,
-            'annually'  => 0,
-            'biennially'=> 0,
-            'triennially' => 0,
+            'monthly'      => $price,
+            'quarterly'    => $price * $multQ,
+            'semiannually' => $price * $multS,
+            'annually'     => $price * $multA,
+            'biennially'   => $price * $multB,
+            'triennially'  => $price * $multT,
           ]);
         }
       }
     }
 
     // --- Server Size ---
-    if (!empty($savedFlavors)) {
+    if ($includeSize && !empty($savedFlavors)) {
       $sizeOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'        => $groupId,
         'optionname' => 'Server Size',
@@ -1212,18 +1256,18 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'bsetupfee'    => 0,
             'tsetupfee'    => 0,
             'monthly'      => $price,
-            'quarterly'    => 0,
-            'semiannually' => 0,
-            'annually'     => 0,
-            'biennially'   => 0,
-            'triennially'  => 0,
+            'quarterly'    => $price * $multQ,
+            'semiannually' => $price * $multS,
+            'annually'     => $price * $multA,
+            'biennially'   => $price * $multB,
+            'triennially'  => $price * $multT,
           ]);
         }
       }
     }
 
     // --- Disk Space ---
-    if (!empty($savedDisks)) {
+    if ($includeDisk && !empty($savedDisks)) {
       $diskOptionId = Capsule::table('tblproductconfigoptions')->insertGetId([
         'gid'        => $groupId,
         'optionname' => 'Disk Space',
@@ -1236,9 +1280,10 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
       $diskSubOrder = 0;
       foreach ($savedDisks as $disk) {
-        $diskSizeGb  = (int)($disk['size_gb'] ?? 0);
-        $diskLabel   = $disk['label'] ?? ($diskSizeGb . ' GB');
-        $diskPrice   = (float)($disk['price'] ?? 0);
+        $diskSizeGb = (int)($disk['size_gb'] ?? 0);
+        $diskLabel  = $disk['label'] ?? ($diskSizeGb . ' GB');
+        $priceMap   = $disk['prices'] ?? null;
+        $legacy     = (float)($disk['price'] ?? 0);
 
         if (!$diskSizeGb) {
           continue;
@@ -1253,6 +1298,9 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
 
         $currencies = Capsule::table('tblcurrencies')->get();
         foreach ($currencies as $currency) {
+          $diskPrice = is_array($priceMap)
+            ? (float)($priceMap[$currency->id] ?? $priceMap[(string)$currency->id] ?? 0)
+            : $legacy;
           Capsule::table('tblpricing')->insert([
             'type'         => 'configoptions',
             'currency'     => $currency->id,
@@ -1264,26 +1312,19 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
             'bsetupfee'    => 0,
             'tsetupfee'    => 0,
             'monthly'      => $diskPrice,
-            'quarterly'    => 0,
-            'semiannually' => 0,
-            'annually'     => 0,
-            'biennially'   => 0,
-            'triennially'  => 0,
+            'quarterly'    => $diskPrice * $multQ,
+            'semiannually' => $diskPrice * $multS,
+            'annually'     => $diskPrice * $multA,
+            'biennially'   => $diskPrice * $multB,
+            'triennially'  => $diskPrice * $multT,
           ]);
         }
       }
     }
 
-    // Auto-assign the new group to every product using the cloudpe_cmp
-    // server module so admins don't have to hop into
-    // Setup -> Products/Services -> [Product] -> Configurable Options
-    // and link it manually.
-    $cmpProductIds = Capsule::table('tblproducts')
-      ->where('servertype', 'cloudpe_cmp')
-      ->pluck('id')
-      ->all();
+    // Link the new group to the products the admin selected.
     $assignedCount = 0;
-    foreach ($cmpProductIds as $pid) {
+    foreach ($productIds as $pid) {
       $exists = Capsule::table('tblproductconfiglinks')
         ->where('gid', $groupId)->where('pid', $pid)->exists();
       if (!$exists) {
@@ -1295,12 +1336,7 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
       }
     }
 
-    $msg = 'Configurable options group "' . $groupName . '" created successfully.';
-    if ($assignedCount > 0) {
-      $msg .= ' Assigned to ' . $assignedCount . ' CloudPe CMP product(s).';
-    } elseif (empty($cmpProductIds)) {
-      $msg .= ' No CloudPe CMP products found to assign — create a product first, then link manually.';
-    }
+    $msg = 'Configurable options group "' . $groupName . '" created successfully. Linked to ' . $assignedCount . ' product(s).';
 
     return [
       'success'  => true,
@@ -1553,10 +1589,53 @@ function cloudpe_cmp_admin_output(array $vars): void
 
       case 'create_config_group':
         $result = cloudpe_cmp_admin_create_config_group([
-          'server_id'  => $serverId,
-          'group_name' => trim($_POST['group_name'] ?? 'CloudPe CMP Options'),
+          'server_id'    => $serverId,
+          'group_name'   => trim($_POST['group_name'] ?? 'CloudPe CMP Options'),
+          'products'     => $_POST['products']     ?? [],
+          'include_os'   => $_POST['include_os']   ?? 0,
+          'include_size' => $_POST['include_size'] ?? 0,
+          'include_disk' => $_POST['include_disk'] ?? 0,
+          'mult_q'       => $_POST['mult_q']       ?? 3,
+          'mult_s'       => $_POST['mult_s']       ?? 6,
+          'mult_a'       => $_POST['mult_a']       ?? 12,
+          'mult_b'       => $_POST['mult_b']       ?? 24,
+          'mult_t'       => $_POST['mult_t']       ?? 36,
         ]);
         echo json_encode($result);
+        exit;
+
+      case 'repair_settings':
+        if (!$serverId) {
+          echo json_encode(['success' => false, 'error' => 'No server selected.']);
+          exit;
+        }
+        $rows = Capsule::table('mod_cloudpe_cmp_settings')->where('server_id', $serverId)->get();
+        $repaired = [];
+        $errors   = [];
+        foreach ($rows as $s) {
+          $original  = $s->setting_value;
+          $sanitized = cloudpe_cmp_admin_sanitize_quotes($original);
+          if ($original !== $sanitized) {
+            try {
+              Capsule::table('mod_cloudpe_cmp_settings')
+                ->where('id', $s->id)
+                ->update(['setting_value' => $sanitized, 'updated_at' => date('Y-m-d H:i:s')]);
+              $repaired[] = [
+                'key'          => $s->setting_key,
+                'before_valid' => json_decode((string)$original,  true) !== null,
+                'after_valid'  => json_decode((string)$sanitized, true) !== null,
+              ];
+            } catch (\Exception $e) {
+              $errors[] = ['key' => $s->setting_key, 'error' => $e->getMessage()];
+            }
+          }
+        }
+        echo json_encode([
+          'success'        => true,
+          'repaired_count' => count($repaired),
+          'repaired'       => $repaired,
+          'errors'         => $errors,
+        ]);
         exit;
 
       default:
@@ -3153,6 +3232,11 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
   $savedFlavors = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
   $savedDisks   = cloudpe_cmp_admin_get_setting($serverId, 'disk_sizes', []);
 
+  $cmpProducts = Capsule::table('tblproducts')
+    ->where('servertype', 'cloudpe_cmp')
+    ->orderBy('name')
+    ->get(['id', 'name']);
+
   // Fetch configurable option groups that are linked to products using this module
   $existingGroups = Capsule::table('tblproductconfiggroups as g')
     ->join('tblproductconfiglinks as l', 'l.gid', '=', 'g.id')
@@ -3172,37 +3256,67 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     </p>
 
     <!-- Create new group -->
-    <div class="panel panel-default" style="max-width:640px; margin-bottom:20px;">
+    <div class="panel panel-default" style="margin-bottom:20px;">
       <div class="panel-heading"><h4 class="panel-title">Create New Group</h4></div>
       <div class="panel-body">
-        <h5>Options to be created (in this order):</h5>
-        <ol>
-          <li><strong>Operating System</strong> — <strong><?php echo count((array)$savedImages); ?></strong> option(s)
-            <?php if (empty($savedImages)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=images&server_id=<?php echo $serverId; ?>">configure images first</a></span><?php endif; ?>
-          </li>
-          <li><strong>Server Size</strong> (grouped) — <strong><?php echo count((array)$savedFlavors); ?></strong> option(s)
-            <?php if (empty($savedFlavors)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=flavors&server_id=<?php echo $serverId; ?>">configure flavors first</a></span><?php endif; ?>
-          </li>
-          <li><strong>Disk Space</strong> — <strong><?php echo count((array)$savedDisks); ?></strong> option(s)
-            <?php if (empty($savedDisks)): ?><span class="text-danger"> — <a href="<?php echo $moduleUrl; ?>&tab=disks&server_id=<?php echo $serverId; ?>">configure disk sizes first</a></span><?php endif; ?>
-          </li>
-        </ol>
-
         <?php if (empty($savedImages) && empty($savedFlavors) && empty($savedDisks)): ?>
         <div class="alert alert-warning">
           No resources are configured yet. Please configure images, flavors, and disk sizes before creating a group.
         </div>
         <?php else: ?>
-        <hr>
-        <div class="form-group">
-          <label for="group-name">Group Name</label>
-          <input type="text" id="group-name" class="form-control" value="CloudPe CMP Options"
-                 placeholder="e.g. CloudPe VM Options">
-        </div>
-        <button class="btn btn-primary" id="btn-create-group">
-          <i class="fa fa-plus-circle"></i> Create Group
-        </button>
-        <div id="create-group-msg" style="display:none; margin-top:10px;"></div>
+        <form id="create-group-form">
+          <div class="form-group">
+            <label for="group-name">Group Name</label>
+            <input type="text" id="group-name" name="group_name" class="form-control"
+                   placeholder="e.g. Linux VPS Options" required>
+          </div>
+
+          <div class="form-group">
+            <label>Link to Products</label>
+            <button type="button" class="btn btn-xs btn-default" id="cg-select-all">Select All</button>
+            <button type="button" class="btn btn-xs btn-default" id="cg-select-none">Select None</button>
+            <div style="max-height:200px; overflow-y:auto; border:1px solid #ddd; padding:10px; margin-top:5px;">
+              <?php if (count($cmpProducts) === 0): ?>
+                <p class="text-muted" style="margin:0;">No CloudPe CMP products found. Create a product first under <strong>Products/Services</strong>.</p>
+              <?php else: foreach ($cmpProducts as $p): ?>
+                <label style="display:block; font-weight:normal;">
+                  <input type="checkbox" name="products" value="<?php echo (int)$p->id; ?>">
+                  <?php echo htmlspecialchars($p->name); ?>
+                </label>
+              <?php endforeach; endif; ?>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Include Options</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_os" checked>
+              Operating System (<?php echo count((array)$savedImages); ?> image<?php echo count((array)$savedImages) === 1 ? '' : 's'; ?>)</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_size" checked>
+              Server Size (<?php echo count((array)$savedFlavors); ?> flavor<?php echo count((array)$savedFlavors) === 1 ? '' : 's'; ?>)</label><br>
+            <label style="font-weight:normal;"><input type="checkbox" name="include_disk" checked>
+              Disk Space (<?php echo count((array)$savedDisks); ?> size<?php echo count((array)$savedDisks) === 1 ? '' : 's'; ?>)</label>
+          </div>
+
+          <div class="form-group">
+            <label>Billing Cycle Multipliers (from monthly)</label>
+            <div class="row">
+              <div class="col-md-2"><label class="small">Quarterly</label><input type="number" step="0.1" name="mult_q" class="form-control input-sm" value="3"></div>
+              <div class="col-md-2"><label class="small">Semi-Annual</label><input type="number" step="0.1" name="mult_s" class="form-control input-sm" value="6"></div>
+              <div class="col-md-2"><label class="small">Annual</label><input type="number" step="0.1" name="mult_a" class="form-control input-sm" value="12"></div>
+              <div class="col-md-2"><label class="small">Biennial</label><input type="number" step="0.1" name="mult_b" class="form-control input-sm" value="24"></div>
+              <div class="col-md-2"><label class="small">Triennial</label><input type="number" step="0.1" name="mult_t" class="form-control input-sm" value="36"></div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-success" id="btn-create-group">
+            <i class="fa fa-plus-circle"></i> Create Configurable Options Group
+          </button>
+          <button type="button" class="btn btn-warning" id="btn-repair-data">
+            <i class="fa fa-wrench"></i> Repair Data
+          </button>
+          <div id="create-group-msg" style="display:none; margin-top:10px;"></div>
+          <div id="repair-result" style="margin-top:10px;"></div>
+        </form>
         <?php endif; ?>
       </div>
     </div>
@@ -3211,31 +3325,55 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     <?php if (!empty((array)$existingGroups)): ?>
     <div class="panel panel-default" style="margin-bottom:20px;">
       <div class="panel-heading">
-        <h4 class="panel-title">Existing Config Groups
+        <h4 class="panel-title">
+          Existing Configurable Option Groups
           <a href="configproductoptions.php" target="_blank" class="btn btn-xs btn-default pull-right">
             <i class="fa fa-external-link"></i> View all
           </a>
         </h4>
       </div>
-      <table class="table table-bordered" style="margin-bottom:0;">
+      <style>
+        #cmp-groups-table tbody tr { cursor: pointer; }
+        #cmp-groups-table tbody tr:hover { background-color: #f5f5f5; }
+      </style>
+      <table id="cmp-groups-table" class="table table-striped" style="margin-bottom:0; table-layout:fixed; width:100%;"
+             title="Click a row to edit the group">
+        <colgroup>
+          <col style="width:60px;">
+          <col>
+          <col style="width:120px;">
+          <col style="width:160px;">
+        </colgroup>
         <thead>
-          <tr><th>#</th><th>Group Name</th><th>Actions</th></tr>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Options</th>
+            <th>Linked Products</th>
+          </tr>
         </thead>
         <tbody>
-          <?php foreach ($existingGroups as $i => $grp): ?>
-          <tr>
-            <td><?php echo $i + 1; ?></td>
+          <?php foreach ($existingGroups as $grp):
+            $optionCount = Capsule::table('tblproductconfigoptions')->where('gid', $grp->id)->count();
+            $linkedCount = Capsule::table('tblproductconfiglinks')->where('gid', $grp->id)->count();
+            $groupUrl    = 'configproductoptions.php?action=managegroup&id=' . (int)$grp->id;
+          ?>
+          <tr data-href="<?php echo htmlspecialchars($groupUrl); ?>">
+            <td><?php echo (int)$grp->id; ?></td>
             <td><?php echo htmlspecialchars($grp->name); ?></td>
-            <td>
-              <a href="configproductoptions.php?action=managegroup&id=<?php echo (int)$grp->id; ?>" target="_blank"
-                 class="btn btn-xs btn-default">
-                <i class="fa fa-edit"></i> Edit
-              </a>
-            </td>
+            <td><?php echo (int)$optionCount; ?></td>
+            <td><?php echo (int)$linkedCount; ?></td>
           </tr>
           <?php endforeach; ?>
         </tbody>
       </table>
+      <script>
+        (function() {
+          $('#cmp-groups-table tbody').on('click', 'tr[data-href]', function() {
+            window.open($(this).data('href'), '_blank');
+          });
+        }());
+      </script>
     </div>
     <?php endif; ?>
   </div>
@@ -3245,29 +3383,78 @@ function cloudpe_cmp_admin_render_create_group(int $serverId, string $moduleUrl)
     var serverId  = <?php echo $serverId; ?>;
     var moduleUrl = '<?php echo $moduleUrl; ?>';
 
-    $('#btn-create-group').on('click', function() {
+    $('#cg-select-all').on('click', function()  { $('input[name="products"]').prop('checked', true);  });
+    $('#cg-select-none').on('click', function() { $('input[name="products"]').prop('checked', false); });
+
+    $('#btn-repair-data').on('click', function() {
+      if (!confirm('This will repair stored settings by fixing Unicode/HTML-entity quote characters. Continue?')) return;
+      var btn = $(this).prop('disabled', true);
+      $('#repair-result').html('<p><i class="fa fa-spinner fa-spin"></i> Repairing data...</p>');
+      $.post(moduleUrl, { action: 'repair_settings', server_id: serverId }, function(r) {
+        btn.prop('disabled', false);
+        var html = '';
+        if (r.success) {
+          if ((r.repaired_count || 0) > 0) {
+            html = '<div class="alert alert-success"><i class="fa fa-check"></i> Repaired ' + r.repaired_count + ' setting(s).</div>' +
+                   '<pre style="max-height:200px; overflow:auto;">' + $('<div>').text(JSON.stringify(r.repaired, null, 2)).html() + '</pre>';
+          } else {
+            html = '<div class="alert alert-info"><i class="fa fa-info-circle"></i> No settings needed repair — all data is valid.</div>';
+          }
+        } else {
+          html = '<div class="alert alert-danger"><i class="fa fa-times"></i> ' + (r.error || r.message || 'Repair failed.') + '</div>';
+        }
+        $('#repair-result').html(html);
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#repair-result').html('<div class="alert alert-danger">Request failed.</div>');
+      });
+    });
+
+    $('#create-group-form').on('submit', function(e) {
+      e.preventDefault();
+
       var groupName = $('#group-name').val().trim();
       if (!groupName) { alert('Please enter a group name.'); return; }
 
-      $(this).prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
+      var products = [];
+      $('input[name="products"]:checked').each(function() { products.push($(this).val()); });
+      if (products.length === 0) { alert('Please select at least one product to link.'); return; }
+
+      var includeOs   = $('input[name="include_os"]').is(':checked')   ? 1 : 0;
+      var includeSize = $('input[name="include_size"]').is(':checked') ? 1 : 0;
+      var includeDisk = $('input[name="include_disk"]').is(':checked') ? 1 : 0;
+      if (!includeOs && !includeSize && !includeDisk) {
+        alert('Please include at least one option type (OS, Size, or Disk).');
+        return;
+      }
+
+      var btn = $('#btn-create-group').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
 
       $.post(moduleUrl, {
-        action:     'create_config_group',
-        server_id:  serverId,
-        group_name: groupName,
+        action:       'create_config_group',
+        server_id:    serverId,
+        group_name:   groupName,
+        products:     products,
+        include_os:   includeOs,
+        include_size: includeSize,
+        include_disk: includeDisk,
+        mult_q:       $('input[name="mult_q"]').val(),
+        mult_s:       $('input[name="mult_s"]').val(),
+        mult_a:       $('input[name="mult_a"]').val(),
+        mult_b:       $('input[name="mult_b"]').val(),
+        mult_t:       $('input[name="mult_t"]').val()
       }, function(resp) {
-        $('#btn-create-group').prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Group');
+        btn.prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Configurable Options Group');
         var msg = $('#create-group-msg');
         if (resp.success) {
           msg.html(resp.message + ' <a href="configproductoptions.php" target="_blank">View groups &rarr;</a>')
              .removeClass('alert-danger').addClass('alert alert-success').show();
-          // Reload page after short delay so new group appears in the existing list
           setTimeout(function() { location.reload(); }, 2500);
         } else {
           msg.text(resp.message || 'Failed to create group.').removeClass('alert-success').addClass('alert alert-danger').show();
         }
       }, 'json').fail(function() {
-        $('#btn-create-group').prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Group');
+        btn.prop('disabled', false).html('<i class="fa fa-plus-circle"></i> Create Configurable Options Group');
         $('#create-group-msg').text('Request failed.').addClass('alert alert-danger').show();
       });
     });
