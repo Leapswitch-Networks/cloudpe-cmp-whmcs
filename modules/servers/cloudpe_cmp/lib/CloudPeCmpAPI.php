@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.1
+ * @version 1.1.2-beta.1
  */
 
 class CloudPeCmpAPI

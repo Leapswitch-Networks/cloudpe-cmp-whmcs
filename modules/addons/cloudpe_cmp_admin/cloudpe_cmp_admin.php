@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.1');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.1.2-beta.1');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -871,7 +871,7 @@ function cloudpe_cmp_admin_load_regions(int $serverId, string $service = 'vm'): 
     foreach ((array)($result['regions'] ?? []) as $r) {
       $regions[] = [
         'id'   => $r['id'] ?? $r['slug'] ?? '',
-        'name' => $r['name'] ?? $r['display_name'] ?? $r['id'] ?? '',
+        'name' => $r['display_name'] ?? $r['name'] ?? $r['id'] ?? '',
       ];
     }
 
@@ -1356,7 +1356,7 @@ function cloudpe_cmp_admin_output(array $vars): void
         exit;
 
       case 'load_regions':
-        $service = trim($_POST['service'] ?? 'vm');
+        $service = trim($_POST['service'] ?? '');
         echo json_encode(cloudpe_cmp_admin_load_regions($serverId, $service));
         exit;
 
@@ -1620,7 +1620,7 @@ function cloudpe_cmp_admin_output(array $vars): void
     window.cmpRegionId  = '';
     window.cmpRegions   = {};  // id → name
 
-    $.post(window.cmpModuleUrl, { action: 'load_regions', server_id: window.cmpServerId, service: 'vm' }, function(resp) {
+    $.post(window.cmpModuleUrl, { action: 'load_regions', server_id: window.cmpServerId }, function(resp) {
       var $sel = $('#cmp-region-select').empty();
       if (resp.success && resp.regions && resp.regions.length) {
         resp.regions.forEach(function(r) {
