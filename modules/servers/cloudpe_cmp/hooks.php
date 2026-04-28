@@ -122,8 +122,90 @@ add_hook('ClientAreaHeadOutput', 1, function ($vars) {
         return '';
     }
 
-    return cloudpe_cmp_hide_ns_html();
+    return cloudpe_cmp_hide_ns_html() . cloudpe_cmp_cart_cascade_html();
 });
+
+/**
+ * Build the JS that wires the Region → Operating System / Server Size
+ * cart cascade. Each OS / Size sub-option's visible label was created
+ * with ` — <RegionName>` suffix in `cloudpe_cmp_admin_create_config_group`,
+ * so we filter those dropdowns by suffix-match against the selected
+ * Region option's label. Disks are server-wide and are not filtered.
+ *
+ * Rendered alongside the ns-hide block on cart pages for CMP products.
+ */
+function cloudpe_cmp_cart_cascade_html(): string
+{
+    return <<<'HTML'
+<script>
+(function() {
+  function findSelectByLabel(name) {
+    var match = null;
+    document.querySelectorAll('select[name^="configoption["]').forEach(function(sel) {
+      if (match) return;
+      // Walk up to find a row containing the option name in a label/th/td/strong.
+      var node = sel.parentNode;
+      for (var i = 0; i < 5 && node; i++, node = node.parentNode) {
+        var txt = (node.textContent || '').trim();
+        // First chunk before the dropdown — strip the select's own text.
+        var labelText = txt.replace(sel.textContent || '', '').trim();
+        if (labelText.indexOf(name) === 0 || labelText.toLowerCase().indexOf(name.toLowerCase()) === 0) {
+          match = sel; return;
+        }
+      }
+    });
+    return match;
+  }
+
+  function regionNameOf(opt) {
+    if (!opt) return '';
+    // The Region <option> label is the bare region name (label set as
+    // "<id>|<RegionName>" → the text content is "<RegionName>"). WHMCS
+    // sometimes appends " (+price)"; strip the trailing parenthetical.
+    return (opt.textContent || '').replace(/\s*\(\+?[^()]*\)\s*$/, '').trim();
+  }
+
+  function applyFilter(regionSel, targetSel) {
+    if (!regionSel || !targetSel) return;
+    var rLabel = regionNameOf(regionSel.selectedOptions[0]);
+    var marker = ' — ' + rLabel;
+    var firstVisible = null;
+    Array.prototype.forEach.call(targetSel.options, function(o) {
+      var text = (o.textContent || '').replace(/\s*\(\+?[^()]*\)\s*$/, '').trim();
+      var matches = !rLabel || text.indexOf(marker) !== -1;
+      o.hidden = !matches;
+      o.disabled = !matches;
+      if (matches && !firstVisible) firstVisible = o;
+    });
+    // If the currently-selected option got filtered out, jump to the
+    // first visible one so the form stays valid.
+    if (targetSel.selectedOptions[0] && targetSel.selectedOptions[0].disabled && firstVisible) {
+      targetSel.value = firstVisible.value;
+      targetSel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  function wire() {
+    var region = findSelectByLabel('Region');
+    if (!region) return;
+    var os    = findSelectByLabel('Operating System');
+    var size  = findSelectByLabel('Server Size');
+    if (!os && !size) return;
+
+    function refilter() { applyFilter(region, os); applyFilter(region, size); }
+    region.addEventListener('change', refilter);
+    refilter();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+HTML;
+}
 
 /**
  * Hook: Hide nameserver prefix fields on the admin product-edit page

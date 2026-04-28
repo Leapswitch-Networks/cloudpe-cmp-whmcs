@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.2-beta.3
+ * @version 1.1.2-beta.5
  */
 
 class CloudPeCmpAPI
@@ -747,7 +747,28 @@ class CloudPeCmpAPI
             }
 
             $result = json_decode($response['body'], true);
-            return ['success' => true, 'volume_types' => $result];
+            // Unwrap any common wrapper key. Server sometimes returns
+            // `[ ... ]`, sometimes `{volume_types: [...]}` or `{types: [...]}`
+            // or `{data: [...]}` / `{items: [...]}`.
+            $list = [];
+            if (is_array($result)) {
+                if (array_keys($result) === range(0, count($result) - 1)) {
+                    // Sequential array
+                    $list = $result;
+                } else {
+                    foreach (['volume_types', 'types', 'data', 'items', 'results'] as $k) {
+                        if (isset($result[$k]) && is_array($result[$k])) {
+                            $list = $result[$k];
+                            break;
+                        }
+                    }
+                }
+            }
+            return [
+                'success'      => true,
+                'volume_types' => $list,
+                'raw_preview'  => substr((string)$response['body'], 0, 400),
+            ];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }
