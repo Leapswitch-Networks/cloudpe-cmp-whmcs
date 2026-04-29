@@ -1,0 +1,127 @@
+### CloudPe CMP API — VS Code REST Client
+### Extension: humao.rest-client
+### Extension Docs: https://marketplace.visualstudio.com/items?itemName=humao.rest-client
+###
+### API Docs: https://app.cloudpe.com/api/docs
+###
+
+### Values are read from .env in this folder via {{$dotenv VAR}}.
+###
+### -------------------- sample .env (copy to ./.env) --------------------
+### # --- Step 1: fill these before running authenticate ---
+### hostname=app.cloudpe.com
+### apiKey=your_api_key
+###
+### # --- Step 2: fill after listFlavors / listImages / listNetworks / listVolumeTypes ---
+### regionId=bde56e52-6dfa-4a35-b729-dae711c69e36
+### projectId=14ec923c-9a36-450e-9c69-38ed3f65c775
+### flavorId=d1c3ef2b-236c-4900-8c32-3bfb25242ad3
+### imageId=23e94221-e4b3-42ca-b209-ce19f5e33a58
+### volumeType=Eco NVMe
+### ----------------------------------------------------------------------
+
+# Fill in the variables below, then click "Send Request" above any ###
+
+@baseUrl = https://{{$dotenv hostname}}/api/v1
+@apiKey  = {{$dotenv apiKey}}
+###
+
+# List all regions
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_regions_api_v1_regions_get
+GET {{baseUrl}}/regions
+Authorization: Bearer {{apiKey}}
+
+@regionId  = {{$dotenv regionId}}
+
+###
+
+# List projects for a specific region
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_projects_api_v1_projects_get
+GET {{baseUrl}}/projects?region_id={{regionId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+# List flavors for a specific region
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_flavors_api_v1_flavors_get
+GET {{baseUrl}}/flavors?region_id={{regionId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+# List images for a specific region
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_images_api_v1_images_get
+GET {{baseUrl}}/images?region_id={{regionId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+# List volume types (storage policies) for a specific region.
+# Use the returned `name` (or `vhi_name`) as `volume.volume_type` in the
+# Create instance body — that's what `volumeType` should be set to in .env.
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_volume_types_api_v1_volumes_types_get
+GET {{baseUrl}}/volumes/types?region={{regionId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+# Billing cycles — there is no GET endpoint; the v1 create-instance schema
+# accepts a fixed enum (app/schemas/v1/instance.py → class BillingCycle).
+# Allowed values for the `billing_cycle` field below:
+#   - hourly
+#   - daily
+#   - weekly
+#   - monthly
+#   - quarterly
+#   - semiannually
+#   - annually
+
+###
+
+# Create instance
+# Docs: https://app.cloudpe.com/api/docs#/v1/create_instance_api_v1_instances_post
+# @name createInstance
+POST {{baseUrl}}/instances
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "name": "my-api-vm",
+  "region_id": "{{regionId}}",
+  "project_id": "{{$dotenv projectId}}",
+  "flavor_id": "{{$dotenv flavorId}}",
+  "image_id": "{{$dotenv imageId}}",
+  "volume": {
+    "size_gb": 30,
+    "volume_type": "{{$dotenv volumeType}}"
+  },
+  "billing_cycle": "hourly",
+  "password": "ChangeMe123!"
+}
+
+###
+
+# get instances
+# Docs: https://app.cloudpe.com/api/docs#/v1/list_instances_api_v1_instances_get
+GET {{baseUrl}}/instances
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+###
+
+# get instances details
+# Docs: https://app.cloudpe.com/api/docs#/v1/get_instance_api_v1_instances__instance_id__get
+# instanceId is captured from the previous "Create instance" response.
+@instanceId = {{createInstance.response.body.$.id}}
+GET {{baseUrl}}/instances/{{instanceId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+###
+
+# Delete instance
+# Docs: https://app.cloudpe.com/api/docs#/v1/delete_instance_api_v1_instances__instance_id__delete
+DELETE {{baseUrl}}/instances/{{instanceId}}
+Authorization: Bearer {{apiKey}}
+
+###
