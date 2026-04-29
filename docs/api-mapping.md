@@ -87,16 +87,24 @@ POST /api/v1/instances
 Authorization: Bearer {api_key}
 
 {
-  "name": "vm-123-456",
-  "flavor": "flavor-uuid-or-name",
-  "image": "image-uuid-or-name",
-  "region": "region-slug",
+  "name": "atul-test.cloudpe.com",
+  "password": "ChangeMe123!",
+  "region_id": "region-uuid",
   "project_id": "project-uuid",
-  "boot_volume_size_gb": 50,
-  "volume_type": "General Purpose",
-  "billing_period": "monthly"
+  "flavor_id": "flavor-openstack-id",
+  "image_id":  "image-openstack-id",
+  "volume": {
+    "size_gb": 50,
+    "volume_type": "Eco-NVMe"
+  },
+  "billing_cycle": "monthly"
 }
 ```
+
+`flavor_id` and `image_id` are the OpenStack-side IDs — the module resolves
+the CMP UUID to the openstack_id via the region listing before sending.
+`billing_cycle` accepts: `hourly`, `daily`, `weekly`, `monthly`, `quarterly`,
+`semiannually`, `annually`. The module hard-codes `monthly` in v1.2.0.
 
 ## Instance Create Response Example
 

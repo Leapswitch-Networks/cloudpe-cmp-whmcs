@@ -2,6 +2,22 @@
 
 All notable changes to the CloudPe CMP WHMCS Module will be documented in this file.
 
+## [1.2.0] - 2026-04-29
+
+- Region-scoped data model: images, flavors, projects, volume types stored per region.
+- New **Regions** tab — admin curates which regions are exposed on the cart; only regions with all four resources configured are eligible.
+- Module Settings reordered to two-column layout: *Default Region | Default Server Size* / *Default Disk Space | Default Operating System*. Advanced mode renders text inputs pre-filled with stored IDs.
+- Default Region dropdown reads from the admin Regions tab and shows display names.
+- Volume Type removed from Module Settings — picked per region in the admin addon's Volume Types tab.
+- Cart cascade: Region drives OS / Server Size filtering; only admin-allowed regions appear in the cart.
+- Hostname is passed verbatim to CMP (no silent dot→hyphen mutation). New `ShoppingCartValidateCheckout` hook rejects invalid hostnames against RFC 1123 on the cart.
+- Root-password policy hint on the cart's Root Password field and on the service detail Reset Password modal (12+ chars, upper/lower/digit/special). Server-side validators enforce the same rules.
+- `createInstance` payload reshaped to match CMP `/instances`: `{ name, password, region_id, project_id, flavor_id, image_id, volume:{size_gb,volume_type}, billing_cycle:'monthly' }`. Default `billing_cycle` is `monthly`.
+- Service detail Server Information panel now reads CMP's top-level fields (`flavor_name`, `vcpus`, `ram_mb`, `disk_gb`, `ip_address`).
+- Provisioning resolves flavor/image `openstack_id` from the region listing before sending to CMP.
+- Admin addon: sortable Images / Flavors / Regions tables, confirm-on-select-all-uncheck, Regions tab uses explicit Load-from-API (no auto-fetch).
+- Manual Install panel in the Updates tab temporarily disabled.
+
 ## [1.1.1] - 2026-04-22
 
 Stable release consolidating the `1.1.1-beta.x` series plus the provisioning hardening and region-scoped admin UX below.

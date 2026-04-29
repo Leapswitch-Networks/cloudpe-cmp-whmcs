@@ -6,7 +6,7 @@
  * Uses API Key (Bearer token) authentication.
  *
  * @author CloudPe
- * @version 1.1.1
+ * @version 1.2.0
  */
 
 class CloudPeCmpAPI
@@ -100,44 +100,39 @@ class CloudPeCmpAPI
     public function createInstance(array $params): array
     {
         try {
+            // Payload shape per CMP /api/v1/instances:
+            //   { name, password, region_id, project_id, flavor_id, image_id,
+            //     volume:{size_gb, volume_type}, billing_cycle }
             $data = [
-                'flavor' => $params['flavor'],
-                'image' => $params['image'],
-                'name' => $params['name'],
-                'project_id' => $params['project_id'],
+                'name'       => $params['name'] ?? '',
+                'region_id'  => $params['region_id'] ?? '',
+                'project_id' => $params['project_id'] ?? '',
+                'flavor_id'  => $params['flavor_id'] ?? ($params['flavor'] ?? ''),
+                'image_id'   => $params['image_id']  ?? ($params['image']  ?? ''),
             ];
 
-            if (!empty($params['ssh_key_ids'])) {
-                $data['ssh_key_ids'] = (array)$params['ssh_key_ids'];
+            if (!empty($params['password'])) {
+                $data['password'] = $params['password'];
             }
 
-            if (!empty($params['boot_volume_size_gb'])) {
-                $data['boot_volume_size_gb'] = (int)$params['boot_volume_size_gb'];
+            if (!empty($params['volume']) && is_array($params['volume'])) {
+                $data['volume'] = $params['volume'];
+            } elseif (!empty($params['boot_volume_size_gb']) || !empty($params['volume_type'])) {
+                $data['volume'] = array_filter([
+                    'size_gb'     => !empty($params['boot_volume_size_gb']) ? (int)$params['boot_volume_size_gb'] : null,
+                    'volume_type' => $params['volume_type'] ?? null,
+                ]);
             }
 
-            if (!empty($params['volume_type'])) {
-                $data['volume_type'] = $params['volume_type'];
+            $billingCycle = $params['billing_cycle'] ?? ($params['billing_period'] ?? '');
+            if ($billingCycle !== '') {
+                $data['billing_cycle'] = $billingCycle;
             }
 
-            if (!empty($params['billing_period'])) {
-                $data['billing_period'] = $params['billing_period'];
-            }
-
-            if (!empty($params['security_group_ids'])) {
-                $data['security_group_ids'] = (array)$params['security_group_ids'];
-            }
-
-            if (!empty($params['region_id'])) {
-                $data['region_id'] = $params['region_id'];
-            }
-
-            if (!empty($params['network_id'])) {
-                $data['network_id'] = $params['network_id'];
-            }
-
-            if (!empty($params['ip_version'])) {
-                $data['ip_version'] = $params['ip_version'];
-            }
+            if (!empty($params['ssh_key_ids']))      $data['ssh_key_ids']      = (array)$params['ssh_key_ids'];
+            if (!empty($params['security_group_ids'])) $data['security_group_ids'] = (array)$params['security_group_ids'];
+            if (!empty($params['network_id']))       $data['network_id']       = $params['network_id'];
+            if (!empty($params['ip_version']))       $data['ip_version']       = $params['ip_version'];
 
             $response = $this->apiRequest('/instances', 'POST', $data);
 
@@ -621,7 +616,7 @@ class CloudPeCmpAPI
      * @param string $osDistro  Optional OS distro filter
      * @param string $regionId  Optional region ID to filter by
      */
-    public function listImages(string $osDistro = '', string $regionId = ''): array
+    public function listImages(string $osDistro = '', string $regionId = '', bool $groupedOnly = true): array
     {
         try {
             $params = [];
@@ -630,6 +625,11 @@ class CloudPeCmpAPI
             }
             if (!empty($regionId)) {
                 $params['region_id'] = $regionId;
+            }
+            // Match cloudpe-cmp dashboard: only grouped, active images.
+            // Callers (e.g. provisioning) can opt out for openstack_id lookups.
+            if ($groupedOnly) {
+                $params['grouped'] = 'true';
             }
 
             $query = http_build_query($params);
@@ -745,7 +745,28 @@ class CloudPeCmpAPI
             }
 
             $result = json_decode($response['body'], true);
-            return ['success' => true, 'volume_types' => $result];
+            // Unwrap any common wrapper key. Server sometimes returns
+            // `[ ... ]`, sometimes `{volume_types: [...]}` or `{types: [...]}`
+            // or `{data: [...]}` / `{items: [...]}`.
+            $list = [];
+            if (is_array($result)) {
+                if (array_keys($result) === range(0, count($result) - 1)) {
+                    // Sequential array
+                    $list = $result;
+                } else {
+                    foreach (['volume_types', 'types', 'data', 'items', 'results'] as $k) {
+                        if (isset($result[$k]) && is_array($result[$k])) {
+                            $list = $result[$k];
+                            break;
+                        }
+                    }
+                }
+            }
+            return [
+                'success'      => true,
+                'volume_types' => $list,
+                'raw_preview'  => substr((string)$response['body'], 0, 400),
+            ];
         } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }

@@ -33,17 +33,20 @@
 
 ### Module Settings (Config Options)
 
-When editing a product's Module Settings, these options are available:
+When editing a product's Module Settings (two-column layout), these options
+are available. All four are text inputs in advanced mode (pre-filled with
+the stored ID) and Loader-driven dropdowns in simple mode:
 
-| Option | Description | Source |
-|--------|-------------|--------|
-| Flavor | VM size (CPU/RAM) | Loaded from CMP API |
-| Default Image | OS image for new VMs | Loaded from CMP API |
-| Region | Deployment region | Loaded from CMP API |
-| Billing Period | Monthly or Hourly | Dropdown |
-| Security Group | Firewall rules | Loaded from CMP API |
-| Min Volume Size | Minimum disk GB (default: 30) | Manual entry |
-| Storage Policy | Volume type | Loaded from CMP API |
+| Position | Option | Source |
+|----------|--------|--------|
+| 1 | Default Region        | Admin addon → **Regions** tab |
+| 2 | Default Server Size   | Admin addon → **Flavors** tab |
+| 3 | Default Disk Space    | Admin addon → **Disk Sizes** tab |
+| 4 | Default Operating System | Admin addon → **Images** tab |
+
+Volume Type is **not** a Module Setting — it is configured per region in
+the admin addon's **Volume Types** tab and resolved from the chosen
+region at provision time.
 
 ### Custom Fields (Required)
 
@@ -69,16 +72,23 @@ Configurable options allow customers to choose their VM specs during ordering.
 ### Auto-Generation via Admin Module
 
 1. Go to **Addons -> CloudPe CMP Manager**
-2. Load resources on the **Images**, **Flavors**, and **Disk Sizes** tabs
-3. Select the resources you want to offer
-4. Set display names and monthly prices
-5. Go to **Create Config Group** tab
-6. Click **Create Config Group**
+2. On each tab — **Images**, **Flavors**, **Projects**, **Volume Types** —
+   click **Load from API** and pick the resources you want to offer per region
+3. Open the **Regions** tab and tick the regions to expose on the cart.
+   A region is only eligible after Images + Flavors + Projects + Volume Types
+   are configured for it
+4. (Optional) On **Disk Sizes** set up server-wide disk options + monthly prices
+5. Go to **Config Groups** tab and pick the products to wire up
+6. Click **Create Configurable Options Group**
 
 This creates a WHMCS configurable options group with:
-- **Operating System**: Dropdown of selected images
-- **Server Size**: Dropdown of selected flavors
-- **Disk Space**: Dropdown of configured disk sizes
+- **Region**: Dropdown of admin-allowed regions (cart cascade root)
+- **Operating System**: Dropdown of (region × image) sub-options
+- **Server Size**: Dropdown of (region × flavor) sub-options
+- **Disk Space**: Dropdown of configured disk sizes (server-wide)
+
+The cart-side cascade hides OS/Server Size sub-options that don't belong
+to the selected Region.
 
 ### Linking to Products
 
@@ -93,11 +103,20 @@ The module reads configurable options by name. Supported names:
 
 | Config Option Name | Maps To | Format |
 |-------------------|---------|--------|
-| `Operating System`, `Image`, `OS` | Image ID | `{image_id}\|{display_name}` |
-| `Server Size`, `Flavor`, `Plan` | Flavor ID | `{flavor_id}\|{display_name}` |
+| `Region` | Region UUID | `{region_id}\|{display_name}` |
+| `Operating System`, `Image`, `OS` | Image ID | `{image_id}\|{display_name} — {region}` |
+| `Server Size`, `Flavor`, `Plan` | Flavor ID | `{flavor_id}\|{display_name} — {region}` |
 | `Disk Space`, `Volume Size` | Volume size | `{size_gb}\|{display_label}` |
 
+The trailing ` — {region}` suffix on OS / Server Size sub-options is what
+the cart cascade JS uses to filter options when Region changes.
+
 ## Multi-Region Setup
+
+A single WHMCS server entry can now expose multiple regions — configure
+each region's Images / Flavors / Projects / Volume Types in the admin
+addon, then tick them in the **Regions** tab. The cart's Region dropdown
+will only list ticked regions.
 
 To support multiple regions:
 
