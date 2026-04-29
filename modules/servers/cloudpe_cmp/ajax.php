@@ -154,7 +154,20 @@ try {
             break;
 
         case 'password':
-            $newPassword = $helper->generatePassword();
+            // Accept user-supplied password from the Reset Password modal;
+            // fall back to a generated strong one for legacy callers.
+            $newPassword = trim((string)($_POST['new_password'] ?? ''));
+            if ($newPassword === '') {
+                $newPassword = $helper->generatePassword();
+            } else {
+                $errs = [];
+                if (strlen($newPassword) < 12)                     $errs[] = 'at least 12 characters';
+                if (!preg_match('/[A-Z]/', $newPassword))          $errs[] = 'an uppercase letter';
+                if (!preg_match('/[a-z]/', $newPassword))          $errs[] = 'a lowercase letter';
+                if (!preg_match('/[0-9]/', $newPassword))          $errs[] = 'a number';
+                if (!preg_match('/[^A-Za-z0-9]/', $newPassword))   $errs[] = 'a special character';
+                if ($errs) jsonResponse(false, 'Password must contain ' . implode(', ', $errs) . '.');
+            }
             $result = $api->changePassword($vmId, $newPassword);
 
             if (!$result['success']) {

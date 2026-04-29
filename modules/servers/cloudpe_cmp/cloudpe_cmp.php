@@ -30,42 +30,54 @@ function cloudpe_cmp_ConfigOptions(): array
 {
     // Product Module Settings -> Configuration. Four defaults the admin
     // picks per product; client cart configurable options can override
-    // each. Region is NOT a Module Setting — it always comes from the
-    // client's cart selection (Configurable Option "Region").
+    // each. Volume Type is NOT a Module Setting — it is configured per
+    // region in the admin addon (Volume Types tab).
+    //
+    // WHMCS lays out Module Settings in two columns in declaration order
+    // (col1, col2, col1, col2, ...). The desired layout is:
+    //   Default Region        | Default Server Size
+    //   Default Disk Space    | Default Operating System
     //
     // Positional indices (referenced as configoption1..4 in CreateAccount):
-    //   1 = image       (Default Operating System)
-    //   2 = flavor      (Default Server Size)
+    //   1 = region            (Default Region)
+    //   2 = flavor            (Default Server Size)
     //   3 = default_disk_size (Default Disk Space)
-    //   4 = volume_type (Default Volume Type)
+    //   4 = image             (Default Operating System)
+    // Type=text+Loader (not dropdown) so WHMCS Advanced mode shows a
+    // normal text input pre-filled with the stored id. Dropdown types
+    // render empty text inputs in Advanced mode which confuses admins.
     return [
-        'image' => [
-            'FriendlyName' => 'Default Operating System',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_ImageLoader',
+        'region' => [
+            'FriendlyName' => 'Default Region',
+            'Type' => 'text',
+            'Size' => 64,
+            'Loader' => 'cloudpe_cmp_RegionLoader',
             'SimpleMode' => true,
-            'Description' => 'Default OS image (overridden by cart "Operating System" Configurable Option).',
+            'Description' => 'Default region (used when the cart has no "Region" Configurable Option).',
         ],
         'flavor' => [
             'FriendlyName' => 'Default Server Size',
-            'Type' => 'dropdown',
+            'Type' => 'text',
+            'Size' => 64,
             'Loader' => 'cloudpe_cmp_FlavorLoader',
             'SimpleMode' => true,
             'Description' => 'Default VM size (overridden by cart "Server Size" Configurable Option).',
         ],
         'default_disk_size' => [
             'FriendlyName' => 'Default Disk Space',
-            'Type' => 'dropdown',
+            'Type' => 'text',
+            'Size' => 10,
             'Loader' => 'cloudpe_cmp_DiskSizeLoader',
             'SimpleMode' => true,
-            'Description' => 'Default disk size (overridden by cart "Disk Space" Configurable Option).',
+            'Description' => 'Default disk size in GB (overridden by cart "Disk Space" Configurable Option).',
         ],
-        'volume_type' => [
-            'FriendlyName' => 'Default Volume Type',
-            'Type' => 'dropdown',
-            'Loader' => 'cloudpe_cmp_VolumeTypeLoader',
+        'image' => [
+            'FriendlyName' => 'Default Operating System',
+            'Type' => 'text',
+            'Size' => 64,
+            'Loader' => 'cloudpe_cmp_ImageLoader',
             'SimpleMode' => true,
-            'Description' => 'Volume type (e.g. General Purpose).',
+            'Description' => 'Default OS image (overridden by cart "Operating System" Configurable Option).',
         ],
     ];
 }
@@ -340,6 +352,64 @@ function cloudpe_cmp_SecurityGroupLoader(array $params): array
     return ['error' => 'Failed to load security groups'];
 }
 
+/**
+ * Region dropdown loader for Module Settings.
+ *
+ * Prefers the admin addon's curated `selected_regions` (Regions tab) so the
+ * product dropdown matches what the cart will actually expose. Falls back to
+ * a live `/regions` lookup when the admin hasn't picked any yet.
+ */
+function cloudpe_cmp_RegionLoader(array $params): array
+{
+    $serverId = (int)($params['serverid'] ?? 0);
+    $selected = (array)cloudpe_cmp_getAdminSetting($serverId, 'selected_regions');
+    $selected = array_values(array_filter(array_map('strval', $selected)));
+
+    // region_names is a flat {rId: label} map. cloudpe_cmp_getAdminSetting
+    // mis-detects it as region-nested (UUID keys) and flattens to []; read
+    // the row directly to get the proper map.
+    $names = [];
+    try {
+        $row = Capsule::table('mod_cloudpe_cmp_settings')
+            ->where('server_id', $serverId)
+            ->where('setting_key', 'region_names')
+            ->first();
+        if ($row) {
+            $decoded = json_decode($row->setting_value, true);
+            if (is_array($decoded)) $names = $decoded;
+        }
+    } catch (Exception $e) {}
+
+    if (!empty($selected)) {
+        $options = [];
+        foreach ($selected as $rId) {
+            $options[$rId] = $names[$rId] ?? $rId;
+        }
+        return $options;
+    }
+
+    try {
+        $api = new CloudPeCmpAPI($params);
+        $result = $api->listRegions();
+        if (!empty($result['success']) && !empty($result['regions'])) {
+            $options = [];
+            foreach ($result['regions'] as $r) {
+                $id = $r['id'] ?? '';
+                if (!$id) continue;
+                $display = $r['display_name'] ?? '';
+                $name    = $r['name'] ?? '';
+                if ($display !== '' && $name !== '' && $display !== $name) {
+                    $options[$id] = $display . ' (' . $name . ')';
+                } else {
+                    $options[$id] = $display ?: ($name ?: $id);
+                }
+            }
+            return $options;
+        }
+    } catch (Exception $e) {}
+    return ['error' => 'Failed to load regions'];
+}
+
 function cloudpe_cmp_VolumeTypeLoader(array $params): array
 {
     $opts = cloudpe_cmp_buildRegionScopedOptions($params, 'selected_volume_types', 'volume_type_names');
@@ -489,6 +559,67 @@ function cloudpe_cmp_sanitizeVolumeType(string $value): string
     return ($value !== '' && !is_numeric($value)) ? $value : '';
 }
 
+/**
+ * Resolve a CMP internal flavor/image UUID to the openstack_id that the
+ * /instances endpoint expects. If the API does not surface a separate
+ * openstack_id for the matched item, fall back to the originally-stored id
+ * so installs whose CMP backend already returns an openstack-style id keep
+ * working. Returns '' only when no match at all is found in the region.
+ */
+function cloudpe_cmp_resolveOpenstackId($api, string $kind, string $id, string $regionId): string
+{
+    if ($id === '') return '';
+
+    $matcher = function (array $items, string $needle): ?string {
+        foreach ($items as $it) {
+            if (!is_array($it)) continue;
+            foreach (['id', 'uuid', 'openstack_id', 'slug'] as $k) {
+                if (isset($it[$k]) && (string)$it[$k] === $needle) {
+                    $os = $it['openstack_id'] ?? '';
+                    return is_string($os) && $os !== '' ? $os : $needle;
+                }
+            }
+        }
+        return null;
+    };
+
+    // Try, in order:
+    //   1. Region-scoped, grouped (matches admin/dashboard view).
+    //   2. Region-scoped, ungrouped (covers ungrouped/legacy images).
+    //   3. Global, ungrouped (last-resort: admin saved an image not currently
+    //      surfaced for the chosen region — we still want to send the right
+    //      openstack_id so CMP can reply with a precise error).
+    $attempts = $kind === 'flavors'
+        ? [
+            ['list' => fn() => $api->listFlavors(true, $regionId), 'key' => 'flavors', 'tag' => 'flavors region'],
+            ['list' => fn() => $api->listFlavors(true, ''),         'key' => 'flavors', 'tag' => 'flavors global'],
+          ]
+        : [
+            ['list' => fn() => $api->listImages('', $regionId, true),  'key' => 'images', 'tag' => 'images region grouped'],
+            ['list' => fn() => $api->listImages('', $regionId, false), 'key' => 'images', 'tag' => 'images region ungrouped'],
+            ['list' => fn() => $api->listImages('', '',        false), 'key' => 'images', 'tag' => 'images global ungrouped'],
+          ];
+
+    $attemptLog = [];
+    foreach ($attempts as $a) {
+        try {
+            $res = ($a['list'])();
+            $items = is_array($res[$a['key']] ?? null) ? $res[$a['key']] : [];
+            $attemptLog[$a['tag']] = ['success' => $res['success'] ?? false, 'count' => count($items)];
+            if (empty($res['success'])) continue;
+            $hit = $matcher($items, $id);
+            if ($hit !== null) return $hit;
+        } catch (Exception $e) {
+            $attemptLog[$a['tag']] = ['exception' => $e->getMessage()];
+        }
+    }
+
+    logModuleCall('cloudpe_cmp', 'resolveOpenstackId', [
+        'kind' => $kind, 'id' => $id, 'region' => $regionId,
+    ], $attemptLog, 'No match in any fallback listing');
+    return '';
+}
+
 // =========================================================================
 // Provisioning Functions
 // =========================================================================
@@ -502,19 +633,22 @@ function cloudpe_cmp_CreateAccount(array $params): string
         logModuleCall('cloudpe_cmp', 'CreateAccount', $params, '', 'Starting VM creation');
 
         // Module Settings positional map (cloudpe_cmp_ConfigOptions):
-        //   1 = image, 2 = flavor, 3 = default_disk_size, 4 = volume_type.
-        $defaultImageId   = trim($params['configoption1'] ?? '');
+        //   1 = region, 2 = flavor, 3 = default_disk_size, 4 = image.
+        $defaultRegionId  = cloudpe_cmp_sanitizeUuid(trim($params['configoption1'] ?? ''));
         $defaultFlavorId  = trim($params['configoption2'] ?? '');
         $defaultDiskSize  = (int)($params['configoption3'] ?? 0);
-        $volumeType       = cloudpe_cmp_sanitizeVolumeType(trim($params['configoption4'] ?? ''));
+        $defaultImageId   = trim($params['configoption4'] ?? '');
 
         $serverId = (int)($params['serverid'] ?? 0);
 
-        // Region — resolved exclusively from the cart's "Region" configurable
-        // option (Phase 5 design: region is the cart cascade root).
+        // Region — cart "Region" Configurable Option overrides product's
+        // Default Region (configoption4).
         $regionId = cloudpe_cmp_sanitizeUuid(trim((string)(
             $params['configoptions']['Region'] ?? ''
         )));
+        if ($regionId === '') $regionId = $defaultRegionId;
+
+        $volumeType = '';
 
         // Flavor / Image: cart override > Module Settings default.
         $flavorId = trim(
@@ -551,20 +685,33 @@ function cloudpe_cmp_CreateAccount(array $params): string
             $projectId = cloudpe_cmp_sanitizeUuid(trim($params['serveraccesshash'] ?? ''));
         }
 
-        // Volume type: Module Settings override (configoption4) > admin
-        // addon's per-region selection (selected_volume_types[regionId][0]).
-        if ($volumeType === '' && $regionId !== '') {
+        // Volume type: per-region selection from the admin addon
+        // (Volume Types tab → selected_volume_types[regionId][0]).
+        if ($regionId !== '') {
             $regionVts = cloudpe_cmp_getAdminSetting($serverId, 'selected_volume_types', $regionId);
             if (is_array($regionVts) && !empty($regionVts)) {
                 $volumeType = cloudpe_cmp_sanitizeVolumeType((string)reset($regionVts));
             }
         }
 
-        if (empty($regionId))   return 'Configuration Error: No region specified (cart "Region" Configurable Option).';
+        if (empty($regionId))   return 'Configuration Error: No region specified (cart "Region" Configurable Option or product Default Region).';
         if (empty($flavorId))   return 'Configuration Error: No server size specified.';
         if (empty($imageId))    return 'Configuration Error: No OS image specified.';
         if (empty($projectId))  return 'Configuration Error: No project ID for region (configure in admin addon Projects tab, or set server Access Hash).';
-        if ($volumeType === '') return 'Configuration Error: No volume type specified (set in admin addon Volume Types tab, or product Default Volume Type).';
+        if ($volumeType === '') return 'Configuration Error: No volume type configured for this region (set it in the admin addon Volume Types tab).';
+
+        // CMP /instances expects the openstack_id (not the CMP UUID) for
+        // both flavor and image. Resolve via the region-scoped listing.
+        $flavorOsId = cloudpe_cmp_resolveOpenstackId($api, 'flavors', $flavorId, $regionId);
+        if ($flavorOsId === '') {
+            return "Configuration Error: Flavor '{$flavorId}' is not currently available in the selected region. Re-load Flavors in the admin addon and update the configurable option.";
+        }
+        $imageOsId  = cloudpe_cmp_resolveOpenstackId($api, 'images',  $imageId,  $regionId);
+        if ($imageOsId === '') {
+            return "Configuration Error: Image '{$imageId}' is not currently available in the selected region. Re-load Images in the admin addon and update the configurable option.";
+        }
+        $flavorId = $flavorOsId;
+        $imageId  = $imageOsId;
 
         // Hostname and password — WHMCS auto-generates both when the cart
         // does not collect them. Reuse $params['domain'] (hostname field
@@ -590,7 +737,7 @@ function cloudpe_cmp_CreateAccount(array $params): string
                 'size_gb'     => $volumeSize,
                 'volume_type' => $volumeType,
             ],
-            'billing_cycle' => 'hourly',
+            'billing_cycle' => 'monthly',
         ];
 
         logModuleCall('cloudpe_cmp', 'CreateAccount', $instanceData, '', 'Sending create request');
@@ -774,7 +921,7 @@ function cloudpe_cmp_ChangePackage(array $params): string
         $currentFlavorId = $currentInstance['flavor']['id'] ?? $currentInstance['flavor'] ?? '';
 
         // Get new values from configurable options or product settings.
-        // Positional map: 1=image, 2=flavor, 3=default_disk_size, 4=volume_type.
+        // Positional map: 1=region, 2=flavor, 3=default_disk_size, 4=image.
         $defaultFlavorId = trim($params['configoption2'] ?? '');
         $newFlavorId = trim(
             $params['configoptions']['Server Size'] ??
@@ -1342,32 +1489,42 @@ function cloudpe_cmp_ClientArea(array $params): array
         }
 
         $instance = $result['instance'];
-        $ipData = $instance['ip_addresses'] ?? $instance['addresses'] ?? [];
-        $ips = $helper->extractIPs($ipData);
-        $status = strtoupper($instance['status'] ?? 'Unknown');
+        $status   = strtoupper($instance['status'] ?? 'Unknown');
 
-        // Flavor details
-        $flavorName = 'Unknown';
-        $flavorVcpus = '-';
-        $flavorRam = '-';
-        $flavor = $instance['flavor'] ?? [];
-        if (is_array($flavor)) {
-            $flavorName = $flavor['name'] ?? 'Unknown';
-            $flavorVcpus = $flavor['vcpu'] ?? $flavor['vcpus'] ?? '-';
-            $flavorRam = $flavor['memory_gb'] ?? round(($flavor['ram'] ?? 0) / 1024, 1);
+        // IPs: CMP /instances/{id} returns a single 'ip_address' string for IPv4.
+        // Fall back to older shapes (ip_addresses / addresses) for compatibility.
+        $ipv4 = $instance['ip_address'] ?? '';
+        $ipv6 = '';
+        if ($ipv4 === '' || isset($instance['ip_addresses']) || isset($instance['addresses'])) {
+            $legacy = $helper->extractIPs($instance['ip_addresses'] ?? $instance['addresses'] ?? []);
+            if ($ipv4 === '') { $ipv4 = $legacy['ipv4']; }
+            $ipv6 = $legacy['ipv6'];
         }
 
-        // Image details
-        $imageName = 'Unknown';
-        $image = $instance['image'] ?? [];
-        if (is_array($image)) {
-            $imageName = $image['name'] ?? 'Unknown';
-        } elseif (is_string($image)) {
-            $imageName = $image;
+        // Flavor details — CMP returns flavor_name/vcpus/ram_mb as top-level
+        // fields (the nested 'flavor' key is now just a UUID string).
+        $flavorName  = $instance['flavor_name']
+                    ?? (is_array($instance['flavor'] ?? null) ? ($instance['flavor']['name'] ?? 'Unknown') : 'Unknown');
+        $flavorVcpus = $instance['vcpus']
+                    ?? (is_array($instance['flavor'] ?? null) ? ($instance['flavor']['vcpu'] ?? $instance['flavor']['vcpus'] ?? '-') : '-');
+        $flavorRam   = '-';
+        if (isset($instance['ram_mb']) && (float)$instance['ram_mb'] > 0) {
+            $flavorRam = round((float)$instance['ram_mb'] / 1024, 1);
+        } elseif (is_array($instance['flavor'] ?? null)) {
+            $flavorRam = $instance['flavor']['memory_gb']
+                      ?? (isset($instance['flavor']['ram']) ? round((float)$instance['flavor']['ram'] / 1024, 1) : '-');
         }
 
-        // Disk size
-        $diskSize = $instance['boot_volume_size_gb'] ?? '-';
+        // Image — CMP returns image_name as top-level field.
+        $imageName = $instance['image_name']
+                  ?? (is_array($instance['image'] ?? null) ? ($instance['image']['name'] ?? 'Unknown')
+                      : (is_string($instance['image'] ?? null) ? $instance['image'] : 'Unknown'));
+
+        // Disk size — CMP returns disk_gb; keep older boot_volume_size_gb as fallback.
+        $diskSize = $instance['disk_gb'] ?? $instance['boot_volume_size_gb'] ?? '-';
+
+        // Keep WHMCS's Primary IP and Assigned IPs in sync on every view.
+        cloudpe_cmp_syncIPs($params, $instance, $helper);
 
         $systemUrl = rtrim($GLOBALS['CONFIG']['SystemURL'] ?? '', '/');
 
@@ -1379,8 +1536,8 @@ function cloudpe_cmp_ClientArea(array $params): array
                 'status' => $status,
                 'status_label' => $helper->getStatusLabel($status),
                 'hostname' => $instance['name'] ?? '',
-                'ipv4' => $ips['ipv4'],
-                'ipv6' => $ips['ipv6'],
+                'ipv4' => $ipv4,
+                'ipv6' => $ipv6,
                 'created' => $instance['created_at'] ?? '',
                 'vcpus' => $flavorVcpus,
                 'ram' => $flavorRam,

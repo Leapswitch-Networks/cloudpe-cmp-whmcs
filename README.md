@@ -12,7 +12,7 @@ A comprehensive WHMCS provisioning module for CloudPe CMP (Cloud Management Plat
 - **Configurable Options**: Auto-generate WHMCS configurable options from CMP resources
 - **Auto-Updates**: Automatic update checking and one-click installation
 - **Multi-Region Support**: Support for multiple regions with region-based filtering
-- **Billing Period**: Support for hourly and monthly billing periods
+- **Billing Cycle**: Provisions on a monthly cycle by default (CMP supports hourly / daily / weekly / monthly / quarterly / semiannually / annually)
 - **API Key Authentication**: Simple and secure Bearer token authentication
 
 ## Requirements
@@ -71,14 +71,13 @@ rm -rf temp_cloudpe_cmp
 1. Create a new product or edit existing
 2. Go to **Module Settings** tab
 3. Select **CloudPe CMP** as the module
-4. Configure:
-   - **Flavor**: Select VM size
-   - **Default Image**: Select OS image
-   - **Region**: Select deployment region
-   - **Billing Period**: Monthly or Hourly
-   - **Security Group**: (optional)
-   - **Min Volume Size**: Minimum disk in GB (default: 30)
-   - **Storage Policy**: Volume type
+4. Configure (two-column layout):
+   - **Default Region** | **Default Server Size**
+   - **Default Disk Space** | **Default Operating System**
+
+   All four are dropdowns in simple mode and text inputs in advanced mode.
+   Volume Type is configured per region in the admin addon's **Volume Types**
+   tab — not in Module Settings.
 
 ### Custom Fields Setup
 

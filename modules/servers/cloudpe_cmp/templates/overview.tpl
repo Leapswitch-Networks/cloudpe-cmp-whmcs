@@ -82,7 +82,7 @@
                                 <li><a href="#" onclick="showShareListModal(); return false;"><i class="fas fa-list"></i> Manage Shares</a></li>
                             </ul>
                         </div>
-                        <button type="button" class="btn btn-danger btn-block" data-action="password">
+                        <button type="button" class="btn btn-danger btn-block" data-toggle="modal" data-target="#resetPasswordModal">
                             <i class="fas fa-key"></i> Reset Password
                         </button>
                     {elseif $status == 'SHUTOFF' || $status == 'SHELVED' || $status == 'STOPPED' || $status == 'SHELVED_OFFLOADED'}
@@ -221,6 +221,69 @@
     </div>
 </div>
 
+<!-- Reset Password Modal -->
+<div class="modal fade" id="resetPasswordModal" tabindex="-1" role="dialog" aria-labelledby="resetPasswordModalLabel">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content cmp-reset-modal">
+            <div class="modal-header cmp-pw-header">
+                <h4 class="modal-title" id="resetPasswordModalLabel"><i class="fas fa-key"></i> Reset VM Password</h4>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            </div>
+            <div class="modal-body">
+                <div id="reset-pw-alert" style="display:none;"></div>
+                <div class="form-group">
+                    <label for="new-vm-password" class="cmp-pw-label">New Password</label>
+                    <div class="cmp-pw-row">
+                        <div class="cmp-pw-input-wrap">
+                            <input type="password" id="new-vm-password" class="form-control cmp-pw-input"
+                                   autocomplete="new-password" placeholder="Enter a strong password">
+                            <i class="fas fa-key cmp-pw-icon"></i>
+                        </div>
+                        <button type="button" class="btn btn-default cmp-pw-toggle" id="btn-toggle-vm-password" title="Show password" aria-label="Show password"><i class="fas fa-eye"></i></button>
+                        <button type="button" class="btn btn-default cmp-pw-generate" id="btn-generate-vm-password" title="Generate a strong password"><i class="fas fa-random"></i> Generate</button>
+                    </div>
+                </div>
+                <div class="cmp-pw-reqs">
+                    <div class="cmp-pw-reqs-title"><strong>Password requirements:</strong></div>
+                    <ul class="cmp-pw-hint-list">
+                        <li class="bad" data-i="0"><span class="cmp-pw-hint-icon"></span><span>At least 12 characters</span></li>
+                        <li class="bad" data-i="1"><span class="cmp-pw-hint-icon"></span><span>One uppercase letter (A&ndash;Z)</span></li>
+                        <li class="bad" data-i="2"><span class="cmp-pw-hint-icon"></span><span>One lowercase letter (a&ndash;z)</span></li>
+                        <li class="bad" data-i="3"><span class="cmp-pw-hint-icon"></span><span>One number (0&ndash;9)</span></li>
+                        <li class="bad" data-i="4"><span class="cmp-pw-hint-icon"></span><span>One special character (!@#$%^&amp;*...)</span></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger cmp-pw-submit" id="btn-submit-password"><i class="fas fa-key"></i> Reset Password</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cmp-reset-modal .modal-header { border-bottom: 1px solid #eee; display: flex; align-items: center; justify-content: space-between; }
+    .cmp-reset-modal .modal-header .modal-title { margin: 0; flex: 1; text-align: left; }
+    .cmp-reset-modal .modal-header .close { float: none; margin-left: 12px; opacity: 0.6; }
+    .cmp-reset-modal .modal-title i { color: #d9534f; margin-right: 4px; }
+    .cmp-reset-modal .cmp-pw-label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
+    .cmp-reset-modal .cmp-pw-row { display: flex; gap: 8px; align-items: stretch; }
+    .cmp-reset-modal .cmp-pw-input-wrap { position: relative; flex: 1; }
+    .cmp-reset-modal .cmp-pw-input { padding-right: 34px; height: 38px; }
+    .cmp-reset-modal .cmp-pw-icon { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: #d9534f; pointer-events: none; }
+    .cmp-reset-modal .cmp-pw-generate { height: 38px; white-space: nowrap; }
+    .cmp-reset-modal .cmp-pw-toggle  { height: 38px; width: 40px; padding: 0; }
+    .cmp-reset-modal .cmp-pw-reqs { margin-top: 14px; font-size: 12px; color:#555; background:#f7f7f9; border:1px solid #e1e1e8; border-radius:4px; padding:10px 12px; }
+    .cmp-reset-modal .cmp-pw-reqs-title { margin-bottom: 6px; color:#333; }
+    .cmp-reset-modal .cmp-pw-hint-list { list-style:none; padding:0; margin:0; }
+    .cmp-reset-modal .cmp-pw-hint-list li { display:flex; align-items:center; padding:2px 0; line-height:1.5; color:#a94442; }
+    .cmp-reset-modal .cmp-pw-hint-list li .cmp-pw-hint-icon { display:inline-block; width:16px; text-align:center; margin-right:8px; font-weight:700; }
+    .cmp-reset-modal .cmp-pw-hint-list li.ok { color:#3c763d; }
+    .cmp-reset-modal .cmp-pw-hint-list li.ok .cmp-pw-hint-icon::before  { content:"\2713"; }
+    .cmp-reset-modal .cmp-pw-hint-list li.bad .cmp-pw-hint-icon::before { content:"\2715"; }
+</style>
+
 <script>
 (function() {
     var serviceId = {$serviceid};
@@ -237,8 +300,7 @@
 
     var confirmMessages = {
         'stop': 'Are you sure you want to stop the VM?',
-        'restart': 'Are you sure you want to restart the VM?',
-        'password': 'Are you sure you want to reset the root password?'
+        'restart': 'Are you sure you want to restart the VM?'
     };
 
     function showAlert(type, message) {
@@ -348,6 +410,33 @@
         });
     }
 
+    function generateStrongPassword(len) {
+        len = len || 16;
+        var u='ABCDEFGHIJKLMNOPQRSTUVWXYZ', l='abcdefghijklmnopqrstuvwxyz', d='0123456789', s='!@#$%^&*';
+        var all = u+l+d+s;
+        function pk(x){ return x.charAt(Math.floor(Math.random()*x.length)); }
+        var pw = pk(u)+pk(l)+pk(d)+pk(s);
+        for (var i=pw.length; i<len; i++) pw += pk(all);
+        return pw.split('').sort(function(){ return Math.random()-0.5; }).join('');
+    }
+    var PW_POLICY = [
+        function(p){ return p.length >= 12; },
+        function(p){ return /[A-Z]/.test(p); },
+        function(p){ return /[a-z]/.test(p); },
+        function(p){ return /[0-9]/.test(p); },
+        function(p){ return /[^A-Za-z0-9]/.test(p); }
+    ];
+    var PW_LABELS = ['at least 12 characters','an uppercase letter','a lowercase letter','a number','a special character'];
+    function evaluatePasswordHint(pw) {
+        var allOk = true; var errors = [];
+        PW_POLICY.forEach(function(rule, i) {
+            var li = document.querySelector('.cmp-reset-modal .cmp-pw-hint-list li[data-i="'+i+'"]');
+            if (rule(pw)) { if (li) li.className = 'ok'; }
+            else { if (li) li.className = 'bad'; allOk = false; errors.push(PW_LABELS[i]); }
+        });
+        return { ok: allOk, errors: errors };
+    }
+
     $(document).ready(function() {
         $('#vm-actions-container').on('click', 'button[data-action]', function(e) {
             e.preventDefault();
@@ -363,6 +452,58 @@
             if (action) {
                 executeAction(action);
             }
+        });
+
+        $('#btn-generate-vm-password').on('click', function() {
+            var pw = generateStrongPassword(16);
+            $('#new-vm-password').val(pw);
+            evaluatePasswordHint(pw);
+            $('#reset-pw-alert').hide();
+        });
+        $('#new-vm-password').on('input', function() {
+            evaluatePasswordHint($(this).val() || '');
+        });
+        $('#btn-toggle-vm-password').on('click', function() {
+            var $i = $('#new-vm-password'), $ic = $(this).find('i');
+            if ($i.attr('type') === 'password') {
+                $i.attr('type','text'); $ic.removeClass('fa-eye').addClass('fa-eye-slash');
+                $(this).attr({ title:'Hide password', 'aria-label':'Hide password' });
+            } else {
+                $i.attr('type','password'); $ic.removeClass('fa-eye-slash').addClass('fa-eye');
+                $(this).attr({ title:'Show password', 'aria-label':'Show password' });
+            }
+        });
+        $('#btn-submit-password').on('click', function() {
+            var pw = $('#new-vm-password').val();
+            var res = evaluatePasswordHint(pw);
+            var $alert = $('#reset-pw-alert');
+            if (!res.ok) {
+                $alert.attr('class','alert alert-danger').text('Password must contain ' + res.errors.join(', ') + '.').show();
+                return;
+            }
+            var $btn = $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Resetting...');
+            $.ajax({
+                url: ajaxUrl + '?action=password&service_id=' + serviceId,
+                type: 'POST', data: { new_password: pw }, dataType: 'json', timeout: 60000
+            }).done(function(r) {
+                if (r.success) {
+                    $('#resetPasswordModal').modal('hide');
+                    showAlert('success', 'Password reset successfully.');
+                } else {
+                    $alert.attr('class','alert alert-danger').text(r.message || 'Reset failed.').show();
+                }
+            }).fail(function(xhr, status, error) {
+                $alert.attr('class','alert alert-danger').text('Request failed: ' + (error || 'Network error')).show();
+            }).always(function() {
+                $btn.prop('disabled', false).html('<i class="fas fa-key"></i> Reset Password');
+            });
+        });
+        $('#resetPasswordModal').on('show.bs.modal', function() {
+            $('#new-vm-password').val('').attr('type','password');
+            $('#btn-toggle-vm-password').attr({ title:'Show password','aria-label':'Show password' })
+                .find('i').removeClass('fa-eye-slash').addClass('fa-eye');
+            $('#reset-pw-alert').hide();
+            evaluatePasswordHint('');
         });
     });
 

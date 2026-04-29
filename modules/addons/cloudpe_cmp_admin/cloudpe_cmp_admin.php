@@ -14,7 +14,7 @@ if (!defined("WHMCS")) {
   die("This file cannot be accessed directly");
 }
 
-define('CLOUDPE_CMP_MODULE_VERSION', '1.1.2-beta.5');
+define('CLOUDPE_CMP_MODULE_VERSION', '1.2.0');
 define('CLOUDPE_CMP_UPDATE_URL', 'https://raw.githubusercontent.com/Leapswitch-Networks/cloudpe-cmp-whmcs/main/version.json');
 define('CLOUDPE_CMP_RELEASES_URL', 'https://api.github.com/repos/Leapswitch-Networks/cloudpe-cmp-whmcs/releases');
 
@@ -1320,13 +1320,29 @@ function cloudpe_cmp_admin_create_config_group(array $params): array
     if ($rId !== '' && !in_array($rId, $configuredRegionIds, true)) $configuredRegionIds[] = $rId;
   }
 
-  // Region display names: prefer admin-saved `region_names`, else live API.
+  // Regions tab — admin's curated allow-list. When set, restrict the cart
+  // Region dropdown (and per-region OS/Size sub-options) to that subset.
+  // When empty, fall back to the union derived above so existing setups
+  // keep working.
+  $allowedRegions = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_regions', []);
+  $allowedRegions = array_values(array_filter(array_map('strval', $allowedRegions)));
+  if (!empty($allowedRegions)) {
+    $configuredRegionIds = array_values(array_intersect($configuredRegionIds, $allowedRegions));
+    $imagesByRegion  = array_intersect_key($imagesByRegion,  array_flip($allowedRegions));
+    $flavorsByRegion = array_intersect_key($flavorsByRegion, array_flip($allowedRegions));
+  }
+
+  // Region display names: always merge live API labels (which include
+  // display_name) so any missing/raw entry in the saved region_names map
+  // is replaced with the friendly label.
   $regionNamesMap = (array)cloudpe_cmp_admin_get_setting($serverId, 'region_names', []);
-  if (empty($regionNamesMap) && !empty($configuredRegionIds)) {
+  if (!empty($configuredRegionIds)) {
     $live = cloudpe_cmp_admin_load_regions($serverId, '');
     if (!empty($live['success']) && !empty($live['regions'])) {
       foreach ($live['regions'] as $r) {
-        if (!empty($r['id'])) $regionNamesMap[$r['id']] = $r['name'] ?? $r['id'];
+        if (!empty($r['id']) && !empty($r['name'])) {
+          $regionNamesMap[$r['id']] = $r['name']; // already display_name-formatted
+        }
       }
     }
   }
@@ -1860,6 +1876,11 @@ function cloudpe_cmp_admin_output(array $vars): void
     .cmp-section { margin-bottom: 30px; }
     .cmp-section h4 { border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 15px; }
     .cmp-resource-table th { background: #f5f5f5; }
+    .cmp-resource-table th.cmp-sortable { cursor: pointer; user-select: none; position: relative; padding-right: 18px; }
+    .cmp-resource-table th.cmp-sortable:hover { background: #ececec; }
+    .cmp-resource-table th.cmp-sortable::after { content: '\2195'; position: absolute; right: 6px; opacity: 0.35; }
+    .cmp-resource-table th.cmp-sortable.cmp-sort-asc::after  { content: '\25B2'; opacity: 1; }
+    .cmp-resource-table th.cmp-sortable.cmp-sort-desc::after { content: '\25BC'; opacity: 1; }
     .cmp-badge-new { background: #e74c3c; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
     .cmp-release-item { border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 10px; padding: 12px 15px; }
     .cmp-release-item h5 { margin: 0 0 5px; }
@@ -1907,6 +1928,55 @@ function cloudpe_cmp_admin_output(array $vars): void
       </form>
     </div>
     <script>
+    // Generic click-to-sort for any .cmp-resource-table. Mark sortable <th>
+    // with class "cmp-sortable" and (optionally) data-sort-type="num".
+    // Renumbers any first-column .row-num cells after sorting.
+    (function() {
+      function valueFor(td, type) {
+        if (!td) return '';
+        var input = td.querySelector('input[type="text"], input[type="number"]');
+        var raw = input ? input.value : (td.textContent || '');
+        raw = raw.trim();
+        if (type === 'num') {
+          var n = parseFloat(raw);
+          return isNaN(n) ? -Infinity : n;
+        }
+        return raw.toLowerCase();
+      }
+      function sortTable(table, thIdx, type, dir) {
+        var tbody = table.tBodies[0];
+        if (!tbody) return;
+        var rows = Array.prototype.slice.call(tbody.rows);
+        rows.sort(function(a, b) {
+          var av = valueFor(a.cells[thIdx], type);
+          var bv = valueFor(b.cells[thIdx], type);
+          if (av < bv) return dir === 'asc' ? -1 : 1;
+          if (av > bv) return dir === 'asc' ?  1 : -1;
+          return 0;
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+        var n = 0;
+        Array.prototype.forEach.call(tbody.rows, function(r) {
+          var num = r.querySelector('.row-num');
+          if (num) num.textContent = (r.offsetParent !== null) ? (++n) : '';
+        });
+      }
+      document.addEventListener('click', function(ev) {
+        var th = ev.target.closest('th.cmp-sortable');
+        if (!th) return;
+        var table = th.closest('table.cmp-resource-table');
+        if (!table) return;
+        var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+        var type = th.getAttribute('data-sort-type') || 'text';
+        var dir = th.classList.contains('cmp-sort-asc') ? 'desc' : 'asc';
+        Array.prototype.forEach.call(th.parentNode.children, function(c) {
+          c.classList.remove('cmp-sort-asc', 'cmp-sort-desc');
+        });
+        th.classList.add(dir === 'asc' ? 'cmp-sort-asc' : 'cmp-sort-desc');
+        sortTable(table, idx, type, dir);
+      });
+    }());
+
     // Global region map (id -> display name). Populated once per page so
     // every tab can render region labels without re-querying the API.
     window.cmpServerId  = <?php echo $serverId; ?>;
@@ -1936,6 +2006,7 @@ function cloudpe_cmp_admin_output(array $vars): void
         'flavors'         => 'Flavors',
         'projects'        => 'Projects',
         'volume_types'    => 'Volume Types',
+        'regions'         => 'Regions',
         'disks'           => 'Disk Sizes',
         'create_group'    => 'Config Groups',
         'updates'         => 'Updates',
@@ -1964,6 +2035,9 @@ function cloudpe_cmp_admin_output(array $vars): void
           break;
         case 'volume_types':
           cloudpe_cmp_admin_render_volume_types($serverId, $moduleUrl);
+          break;
+        case 'regions':
+          cloudpe_cmp_admin_render_regions($serverId, $moduleUrl);
           break;
         case 'disks':
           cloudpe_cmp_admin_render_disks($serverId, $moduleUrl);
@@ -2106,12 +2180,12 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl, strin
         <tr>
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-images" title="Select/deselect all"></th>
-          <th>Name</th>
-          <th>Region</th>
-          <th>Image ID</th>
-          <th>Display Name</th>
+          <th class="cmp-sortable">Name</th>
+          <th class="cmp-sortable">Region</th>
+          <th class="cmp-sortable">Image ID</th>
+          <th class="cmp-sortable">Display Name</th>
           <?php foreach ($currencies as $c): ?>
-          <th><?php echo htmlspecialchars($c->code); ?> /mo</th>
+          <th class="cmp-sortable" data-sort-type="num"><?php echo htmlspecialchars($c->code); ?> /mo</th>
           <?php endforeach; ?>
         </tr>
       </thead>
@@ -2310,6 +2384,13 @@ function cloudpe_cmp_admin_render_images(int $serverId, string $moduleUrl, strin
 
     $('#check-all-images').on('change', function() {
       var checked = $(this).is(':checked');
+      if (!checked) {
+        var n = $('#images-table tbody tr:visible .img-check:checked').length;
+        if (n > 0 && !confirm('Deselect all ' + n + ' visible image(s)?')) {
+          $(this).prop('checked', true);
+          return;
+        }
+      }
       $('#images-table tbody tr:visible').each(function() {
         $(this).find('.img-check').prop('checked', checked);
       });
@@ -2431,14 +2512,14 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl, stri
         <tr>
           <th style="width:35px;">#</th>
           <th style="width:32px;"><input type="checkbox" id="check-all-flavors" title="Select/deselect all"></th>
-          <th>Name</th>
-          <th>Region</th>
-          <th>vCPU</th>
-          <th>RAM (GB)</th>
-          <th>Flavor ID</th>
-          <th>Display Name</th>
+          <th class="cmp-sortable">Name</th>
+          <th class="cmp-sortable">Region</th>
+          <th class="cmp-sortable" data-sort-type="num">vCPU</th>
+          <th class="cmp-sortable" data-sort-type="num">RAM (GB)</th>
+          <th class="cmp-sortable">Flavor ID</th>
+          <th class="cmp-sortable">Display Name</th>
           <?php foreach ($currencies as $c): ?>
-          <th><?php echo htmlspecialchars($c->code); ?> /mo</th>
+          <th class="cmp-sortable" data-sort-type="num"><?php echo htmlspecialchars($c->code); ?> /mo</th>
           <?php endforeach; ?>
         </tr>
       </thead>
@@ -2674,6 +2755,13 @@ function cloudpe_cmp_admin_render_flavors(int $serverId, string $moduleUrl, stri
 
     $('#check-all-flavors').on('change', function() {
       var checked = $(this).is(':checked');
+      if (!checked) {
+        var n = $('#flavors-table tbody tr:visible .flv-check:checked').length;
+        if (n > 0 && !confirm('Deselect all ' + n + ' visible flavor(s)?')) {
+          $(this).prop('checked', true);
+          return;
+        }
+      }
       $('#flavors-table tbody tr:visible').each(function() { $(this).find('.flv-check').prop('checked', checked); });
     });
 
@@ -3188,6 +3276,274 @@ function cloudpe_cmp_admin_render_volume_types(int $serverId, string $moduleUrl)
   <?php
 }
 
+/**
+ * Regions tab — pick which regions are exposed on the cart.
+ *
+ * A region is "complete" only when it has at least one image, one flavor,
+ * one project and one volume type configured. Incomplete regions are
+ * disabled in the table; only checked + complete regions land in the
+ * `selected_regions` setting and propagate to the cart Configurable
+ * Options group.
+ */
+function cloudpe_cmp_admin_render_regions(int $serverId, string $moduleUrl): void
+{
+  $rawSelImg  = cloudpe_cmp_admin_get_setting($serverId, 'selected_images', []);
+  $rawSelFlv  = cloudpe_cmp_admin_get_setting($serverId, 'selected_flavors', []);
+  $rawSelProj = cloudpe_cmp_admin_get_setting($serverId, 'selected_projects', []);
+  $rawSelVt   = cloudpe_cmp_admin_get_setting($serverId, 'selected_volume_types', []);
+  $savedSelected = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_regions', []);
+  $savedNames    = (array)cloudpe_cmp_admin_get_setting($serverId, 'region_names', []);
+
+  $hasItems = function ($map): array {
+    $out = [];
+    if (!is_array($map)) return $out;
+    foreach ($map as $rId => $items) {
+      if (is_array($items) && !empty($items)) $out[(string)$rId] = true;
+    }
+    return $out;
+  };
+  $imgRegions  = $hasItems($rawSelImg);
+  $flvRegions  = $hasItems($rawSelFlv);
+  $projRegions = $hasItems($rawSelProj);
+  $vtRegions   = $hasItems($rawSelVt);
+  $savedSet    = array_flip(array_map('strval', $savedSelected));
+
+  $eligible = function (string $rId) use ($imgRegions, $flvRegions, $projRegions, $vtRegions): bool {
+    return !empty($imgRegions[$rId]) && !empty($flvRegions[$rId])
+        && !empty($projRegions[$rId]) && !empty($vtRegions[$rId]);
+  };
+  ?>
+  <div class="cmp-section">
+    <h4>Regions</h4>
+    <p class="text-muted">Tick the regions to expose on the cart. A region can only be selected once Images, Flavors, Projects and Volume Types are configured for it.</p>
+    <div class="cmp-toolbar">
+      <button class="btn btn-primary" id="btn-load-regions">
+        <i class="fa fa-refresh"></i> Load from API
+      </button>
+      <span id="reg-loading" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Loading regions...</span>
+      <input type="text" id="regions-search" class="form-control cmp-search" placeholder="Filter regions...">
+      <span id="reg-saving" style="display:none;"><i class="fa fa-spinner fa-spin"></i> Saving configuration...</span>
+      <span id="reg-save-msg" class="cmp-save-msg" style="display:none;"></span>
+      <button class="btn btn-success" id="btn-save-regions">
+        <i class="fa fa-save"></i> Save Configuration
+      </button>
+    </div>
+    <div id="reg-error" class="alert alert-danger" style="display:none;"></div>
+
+    <div class="cmp-table-wrap">
+    <table class="table table-bordered cmp-resource-table" id="regions-table">
+      <thead>
+        <tr>
+          <th style="width:35px;">#</th>
+          <th style="width:32px;"><input type="checkbox" id="check-all-regions" title="Select/deselect all eligible"></th>
+          <th class="cmp-sortable">Region</th>
+          <th class="cmp-sortable">Region ID</th>
+          <th class="cmp-sortable text-center">Images</th>
+          <th class="cmp-sortable text-center">Flavors</th>
+          <th class="cmp-sortable text-center">Projects</th>
+          <th class="cmp-sortable text-center">Volume Types</th>
+          <th class="cmp-sortable text-center">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php
+          // Server-side render for already-saved regions (no API call on
+          // page load — same pattern as Images/Flavors).
+          $rowIdx = 0;
+          foreach ($savedSelected as $rId):
+            $rId = (string)$rId;
+            if ($rId === '') continue;
+            $label = $savedNames[$rId] ?? $rId;
+            $hi = !empty($imgRegions[$rId]);
+            $hf = !empty($flvRegions[$rId]);
+            $hp = !empty($projRegions[$rId]);
+            $hv = !empty($vtRegions[$rId]);
+            $isEligible = $hi && $hf && $hp && $hv;
+            $rowIdx++;
+        ?>
+        <tr data-region="<?php echo htmlspecialchars($rId); ?>" data-saved="1"<?php echo $isEligible ? '' : ' style="opacity:0.6;"'; ?>>
+          <td class="row-num"><?php echo $rowIdx; ?></td>
+          <td><input type="checkbox" class="reg-check"<?php echo $isEligible ? ' checked' : ' disabled'; ?>></td>
+          <td><strong class="reg-label"><?php echo htmlspecialchars($label); ?></strong></td>
+          <td><small class="text-muted"><?php echo htmlspecialchars($rId); ?></small></td>
+          <td class="text-center reg-cell-img"><?php echo $hi ? '<span style="color:#27ae60;font-weight:bold;">&#10003;</span>' : '<span style="color:#c0392b;font-weight:bold;">&#10007;</span>'; ?></td>
+          <td class="text-center reg-cell-flv"><?php echo $hf ? '<span style="color:#27ae60;font-weight:bold;">&#10003;</span>' : '<span style="color:#c0392b;font-weight:bold;">&#10007;</span>'; ?></td>
+          <td class="text-center reg-cell-proj"><?php echo $hp ? '<span style="color:#27ae60;font-weight:bold;">&#10003;</span>' : '<span style="color:#c0392b;font-weight:bold;">&#10007;</span>'; ?></td>
+          <td class="text-center reg-cell-vt"><?php echo $hv ? '<span style="color:#27ae60;font-weight:bold;">&#10003;</span>' : '<span style="color:#c0392b;font-weight:bold;">&#10007;</span>'; ?></td>
+          <td class="text-center"><?php echo $isEligible
+              ? '<span class="label label-success">Eligible</span>'
+              : '<span class="label label-default" title="Configure all four resources to enable">Incomplete</span>'; ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+    </div>
+
+    <?php if ($rowIdx === 0): ?>
+    <p class="text-muted">No regions configured yet. Click <strong>Load from API</strong> to fetch them.</p>
+    <?php endif; ?>
+  </div>
+
+  <script>
+  (function() {
+    var serverId = <?php echo $serverId; ?>;
+    var moduleUrl = '<?php echo $moduleUrl; ?>';
+    var imgRegions  = <?php echo json_encode((object)$imgRegions); ?>;
+    var flvRegions  = <?php echo json_encode((object)$flvRegions); ?>;
+    var projRegions = <?php echo json_encode((object)$projRegions); ?>;
+    var vtRegions   = <?php echo json_encode((object)$vtRegions); ?>;
+    var savedSet = <?php echo json_encode((object)$savedSet); ?>;
+
+    function reNumber() {
+      var n = 0;
+      $('#regions-table tbody tr').each(function() {
+        $(this).find('.row-num').text($(this).is(':visible') ? ++n : '');
+      });
+    }
+    function badge(ok) {
+      return ok
+        ? '<span style="color:#27ae60;font-weight:bold;">&#10003;</span>'
+        : '<span style="color:#c0392b;font-weight:bold;">&#10007;</span>';
+    }
+
+    function appendRows(regions) {
+      var $tbody = $('#regions-table tbody');
+      var existing = {};
+      $tbody.find('tr').each(function() { existing[String($(this).data('region'))] = $(this); });
+
+      regions.forEach(function(r) {
+        var rId = String(r.id);
+        var label = r.name || rId;
+        var hi = !!imgRegions[rId], hf = !!flvRegions[rId], hp = !!projRegions[rId], hv = !!vtRegions[rId];
+        var isEligible = hi && hf && hp && hv;
+
+        if (existing[rId]) {
+          // Refresh status cells / label on the existing saved row.
+          var $row = existing[rId];
+          $row.find('.reg-label').text(label);
+          $row.find('.reg-cell-img').html(badge(hi));
+          $row.find('.reg-cell-flv').html(badge(hf));
+          $row.find('.reg-cell-proj').html(badge(hp));
+          $row.find('.reg-cell-vt').html(badge(hv));
+          var $cb = $row.find('.reg-check');
+          if (!isEligible) { $cb.prop('checked', false).prop('disabled', true); $row.css('opacity', '0.6'); }
+          else             { $cb.prop('disabled', false); $row.css('opacity', ''); }
+          return;
+        }
+
+        var $cb = $('<input type="checkbox" class="reg-check">')
+          .prop('checked', isEligible && !!savedSet[rId])
+          .prop('disabled', !isEligible);
+        var statusHtml = isEligible
+          ? '<span class="label label-success">Eligible</span>'
+          : '<span class="label label-default" title="Configure all four resources to enable">Incomplete</span>';
+        var $row = $('<tr>').attr('data-region', rId).attr('data-saved', '0');
+        if (!isEligible) $row.css('opacity', '0.6');
+        $row.append($('<td class="row-num">'));
+        $row.append($('<td>').append($cb));
+        $row.append($('<td>').html('<strong class="reg-label">' + $('<span>').text(label).html() + '</strong>'));
+        $row.append($('<td>').html('<small class="text-muted">' + $('<span>').text(rId).html() + '</small>'));
+        $row.append($('<td class="text-center reg-cell-img">').html(badge(hi)));
+        $row.append($('<td class="text-center reg-cell-flv">').html(badge(hf)));
+        $row.append($('<td class="text-center reg-cell-proj">').html(badge(hp)));
+        $row.append($('<td class="text-center reg-cell-vt">').html(badge(hv)));
+        $row.append($('<td class="text-center">').html(statusHtml));
+        $tbody.append($row);
+      });
+      reNumber();
+    }
+
+    // Search filter
+    $('#regions-search').on('input', function() {
+      var q = $(this).val().toLowerCase().trim();
+      $('#regions-table tbody tr').each(function() {
+        var row = $(this);
+        if (!q) { row.show(); return; }
+        row.toggle(row.text().toLowerCase().indexOf(q) !== -1);
+      });
+      reNumber();
+    });
+
+    // Load from API — explicit, no auto-fetch on tab open.
+    $('#btn-load-regions').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#reg-error').hide();
+      $('#reg-loading').show();
+      $.post(moduleUrl, { action: 'load_regions', server_id: serverId, service: '' }, function(resp) {
+        btn.prop('disabled', false);
+        $('#reg-loading').hide();
+        if (resp && resp.success && Array.isArray(resp.regions)) {
+          appendRows(resp.regions);
+        } else {
+          $('#reg-error').text((resp && resp.error) || 'Failed to load regions.').show();
+        }
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#reg-loading').hide();
+        $('#reg-error').text('Network error while loading regions.').show();
+      });
+    });
+
+    $('#regions-table').on('change', '.reg-check', function() {
+      var cb = $(this);
+      if (!cb.is(':checked')) {
+        var name = cb.closest('tr').find('.reg-label').text() || cb.closest('tr').data('region');
+        if (!confirm('Remove "' + name + '" from the allowed regions?')) {
+          cb.prop('checked', true);
+        }
+      }
+    });
+
+    $('#check-all-regions').on('change', function() {
+      var checked = $(this).is(':checked');
+      if (!checked) {
+        var n = $('#regions-table tbody tr:visible .reg-check:checked').length;
+        if (n > 0 && !confirm('Deselect all ' + n + ' visible region(s)?')) {
+          $(this).prop('checked', true);
+          return;
+        }
+      }
+      $('#regions-table tbody tr:visible .reg-check:not(:disabled)').prop('checked', checked);
+    });
+
+    $('#btn-save-regions').on('click', function() {
+      var btn = $(this).prop('disabled', true);
+      $('#reg-save-msg').hide();
+      $('#reg-error').hide();
+      $('#reg-saving').show();
+      var selected = [];
+      var names = {};
+      $('#regions-table tbody .reg-check:checked:not(:disabled)').each(function() {
+        var $row = $(this).closest('tr');
+        var rId = String($row.data('region'));
+        selected.push(rId);
+        names[rId] = $row.find('.reg-label').text() || rId;
+      });
+      $.post(moduleUrl, {
+        action: 'save_selected_regions',
+        server_id: serverId,
+        selected_regions: selected,
+        region_names: names
+      }, function(resp) {
+        btn.prop('disabled', false);
+        $('#reg-saving').hide();
+        if (resp && resp.success) {
+          $('#reg-save-msg').text('Configuration saved.').removeClass('error').show();
+          setTimeout(function() { $('#reg-save-msg').fadeOut(); }, 3000);
+        } else {
+          $('#reg-error').text((resp && resp.error) || 'Failed to save regions.').show();
+        }
+      }, 'json').fail(function() {
+        btn.prop('disabled', false);
+        $('#reg-saving').hide();
+        $('#reg-error').text('Network error while saving.').show();
+      });
+    });
+  }());
+  </script>
+  <?php
+}
+
 function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleUrl): void
 {
   $savedSgs = (array)cloudpe_cmp_admin_get_setting($serverId, 'selected_security_groups', []);
@@ -3360,6 +3716,13 @@ function cloudpe_cmp_admin_render_security_groups(int $serverId, string $moduleU
     // Check-all header: check or uncheck all visible rows (no removal)
     $('#check-all-sgs').on('change', function() {
       var checked = $(this).is(':checked');
+      if (!checked) {
+        var n = $('#sgs-table tbody tr:visible .sg-check:checked').length;
+        if (n > 0 && !confirm('Deselect all ' + n + ' visible security group(s)?')) {
+          $(this).prop('checked', true);
+          return;
+        }
+      }
       $('#sgs-table tbody tr:visible').each(function() {
         $(this).find('.sg-check').prop('checked', checked);
       });
@@ -3712,6 +4075,8 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
     </div>
   </div>
 
+  <?php /* Manual Install — temporarily disabled in v1.2.0; re-enable in a
+           later development/bugfix cycle.
   <div class="panel panel-default">
     <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-upload"></i> Manual Install</h3></div>
     <div class="panel-body">
@@ -3730,6 +4095,7 @@ function cloudpe_cmp_admin_render_updates(string $moduleUrl): void
       <div id="manual-install-result" style="display:none; margin-top:10px;"></div>
     </div>
   </div>
+  */ ?>
 
   <div class="panel panel-default">
     <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-history"></i> All Releases</h3></div>

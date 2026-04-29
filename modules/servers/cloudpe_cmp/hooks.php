@@ -208,6 +208,180 @@ HTML;
 }
 
 /**
+ * Hook: on the cart Configure page for a CloudPe CMP product, show the
+ * password-policy hint under the Root Password field and block form
+ * submission until the password matches the policy. Mirrors the client-
+ * area Reset Password modal — same rules, same UX.
+ *
+ * Policy: 12+ chars, 1 upper, 1 lower, 1 digit, 1 special.
+ */
+add_hook('ClientAreaHeadOutput', 1, function ($vars) {
+    $scriptName = basename($_SERVER['SCRIPT_NAME'] ?? '');
+    $page = $vars['filename'] ?? '';
+    $onCart = ($scriptName === 'cart.php') || ($page === 'cart') || ($scriptName === 'configureproduct.php');
+    if (!$onCart) return '';
+
+    $productId = 0;
+    $cartIndex = $_REQUEST['i'] ?? null;
+    if ($cartIndex !== null && isset($_SESSION['cart']['products'][$cartIndex]['pid'])) {
+        $productId = (int)$_SESSION['cart']['products'][$cartIndex]['pid'];
+    } elseif (!empty($_SESSION['cart']['products']) && is_array($_SESSION['cart']['products'])) {
+        foreach ($_SESSION['cart']['products'] as $p) {
+            if (!empty($p['pid']) && cloudpe_cmp_product_is_cmp((int)$p['pid'])) { $productId = (int)$p['pid']; break; }
+        }
+    }
+    if (!cloudpe_cmp_product_is_cmp($productId)) return '';
+
+    return <<<'HTML'
+<style>
+  input[name="rootpassword"], input[name="rootpw"] { width:100% !important; max-width:100%; box-sizing:border-box; }
+  .cmp-pw-row { align-items: flex-start !important; }
+  .cmp-pw-label-top { align-self: flex-start !important; vertical-align: top !important; padding-top: 7px !important; margin-top: 0 !important; }
+  .cmp-pw-hint { margin-top:8px; font-size:12px; color:#555; background:#f7f7f9; border:1px solid #e1e1e8; border-radius:4px; padding:10px 12px; display:none; }
+  .cmp-pw-hint.cmp-pw-show { display:block; }
+  .cmp-pw-hint-title { font-weight:600; margin-bottom:6px; color:#333; }
+  .cmp-pw-hint-list { list-style:none; margin:0; padding:0; }
+  .cmp-pw-hint-list li { display:flex; align-items:center; padding:2px 0; line-height:1.5; color:#a94442; }
+  .cmp-pw-hint-list li .cmp-pw-icon { display:inline-block; width:16px; text-align:center; margin-right:8px; font-weight:700; }
+  .cmp-pw-hint-list li.ok { color:#3c763d; }
+  .cmp-pw-hint-list li.ok .cmp-pw-icon::before  { content:"\2713"; }
+  .cmp-pw-hint-list li.bad .cmp-pw-icon::before { content:"\2715"; }
+  .cmp-pw-error { color:#a94442; font-size:12px; margin-top:6px; display:none; }
+</style>
+<script>
+(function() {
+  var POLICY = [
+    { label: 'At least 12 characters',              test: function(p){ return p.length >= 12; } },
+    { label: 'One uppercase letter (A-Z)',          test: function(p){ return /[A-Z]/.test(p); } },
+    { label: 'One lowercase letter (a-z)',          test: function(p){ return /[a-z]/.test(p); } },
+    { label: 'One number (0-9)',                    test: function(p){ return /[0-9]/.test(p); } },
+    { label: 'One special character (!@#$%^&*...)', test: function(p){ return /[^A-Za-z0-9]/.test(p); } }
+  ];
+  function find() { return document.querySelector('input[name="rootpassword"], input[name="rootpw"], input[name="password"][type="password"]'); }
+  function rowOf($i){ return $i.closest('.form-group') || $i.closest('tr') || $i.closest('.row') || $i.parentNode; }
+  function inject($i){
+    if ($i.parentNode.querySelector('.cmp-pw-hint')) return;
+    var row = rowOf($i);
+    if (row) {
+      Array.prototype.forEach.call(row.querySelectorAll('label,.control-label,td:first-child'), function(el){ el.classList.add('cmp-pw-label-top'); });
+      row.classList.add('cmp-pw-row');
+    }
+    var box = document.createElement('div'); box.className = 'cmp-pw-hint';
+    var html = '<div class="cmp-pw-hint-title">Password requirements:</div><ul class="cmp-pw-hint-list">';
+    POLICY.forEach(function(r,i){ html += '<li class="bad" data-i="'+i+'"><span class="cmp-pw-icon"></span><span>'+r.label+'</span></li>'; });
+    html += '</ul>';
+    box.innerHTML = html;
+    var err = document.createElement('div'); err.className = 'cmp-pw-error'; err.textContent = 'Password does not meet requirements.';
+    $i.parentNode.appendChild(box); $i.parentNode.appendChild(err);
+  }
+  function evaluate($i){
+    var pw = $i.value || '';
+    var box = $i.parentNode.querySelector('.cmp-pw-hint'); if (!box) return true;
+    var allOk = true;
+    POLICY.forEach(function(rule,i){
+      var li = box.querySelector('li[data-i="'+i+'"]'); if (!li) return;
+      if (rule.test(pw)) { li.className='ok'; } else { li.className='bad'; allOk=false; }
+    });
+    var errEl = $i.parentNode.querySelector('.cmp-pw-error'); if (errEl) errEl.style.display='none';
+    var focused = document.activeElement === $i;
+    var has = ($i.value||'').length > 0;
+    if (focused || (has && !allOk)) box.classList.add('cmp-pw-show'); else box.classList.remove('cmp-pw-show');
+    return allOk;
+  }
+  function block($i, e){
+    if (($i.value||'').length === 0) return false;
+    if (!evaluate($i)) {
+      if (e){ e.preventDefault(); e.stopImmediatePropagation(); }
+      var errEl = $i.parentNode.querySelector('.cmp-pw-error'); if (errEl) errEl.style.display='block';
+      $i.focus(); return true;
+    }
+    return false;
+  }
+  function wire(){
+    var $i = find(); if (!$i) return;
+    inject($i);
+    $i.addEventListener('input', function(){ evaluate($i); });
+    $i.addEventListener('focus', function(){ evaluate($i); });
+    $i.addEventListener('blur',  function(){ evaluate($i); });
+    var f = $i.form;
+    if (f && !f.__cmpPwBound) { f.__cmpPwBound = true; f.addEventListener('submit', function(e){ block($i,e); }, true); }
+    if (!document.__cmpPwClickBound) {
+      document.__cmpPwClickBound = true;
+      document.addEventListener('click', function(e){
+        var btn = e.target.closest('button, input[type="submit"], a.btn'); if (!btn) return;
+        var t = (btn.getAttribute('type')||'').toLowerCase();
+        var txt = (btn.textContent||btn.value||'').toLowerCase();
+        var sub = t==='submit' || /continue|checkout|complete|place\s*order/.test(txt) || btn.id==='btnCompleteOrder' || btn.classList.contains('btn-checkout');
+        if (!sub) return;
+        var live = find(); if (!live || !document.body.contains(live)) return;
+        block(live, e);
+      }, true);
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+  else wire();
+})();
+</script>
+HTML;
+});
+
+/**
+ * Hook: validate the hostname entered on the cart before checkout.
+ *
+ * CloudPe CMP requires hostnames to follow RFC 1123 (letters, digits,
+ * hyphens, and dots, with no leading/trailing hyphen per label). We
+ * reject anything outside this shape up-front so the user gets a clear
+ * error on the order form instead of the module silently mutating their
+ * input (e.g. "atul-test.cloudpe.com" → "atul-test-cloudpe-com").
+ */
+add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
+    if (empty($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) return;
+    $hasCmp = false;
+    foreach ($_SESSION['cart']['products'] as $p) {
+        if (cloudpe_cmp_product_is_cmp((int)($p['pid'] ?? 0))) { $hasCmp = true; break; }
+    }
+    if (!$hasCmp) return;
+
+    $hostname = trim((string)($_POST['hostname'] ?? $_REQUEST['hostname'] ?? ''));
+    if ($hostname === '') return ['error' => 'Hostname is required.'];
+    if (strlen($hostname) > 253) return ['error' => 'Hostname must be 253 characters or fewer.'];
+    $labelRe = '/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/';
+    foreach (explode('.', $hostname) as $label) {
+        if ($label === '' || !preg_match($labelRe, $label)) {
+            return ['error' => 'Hostname "' . htmlspecialchars($hostname) . '" is invalid. Use only letters, digits, hyphens and dots; each label must start and end with a letter or digit (e.g. atul-test or atul-test.cloudpe.com).'];
+        }
+    }
+});
+
+/**
+ * Hook: server-side enforcement of the root password policy on checkout.
+ * Mirrors the client-side hint rules — returns a cart error if JS is
+ * disabled or a theme bypasses the client-side submit blocker.
+ */
+add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
+    if (empty($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) return;
+    $hasCmp = false;
+    foreach ($_SESSION['cart']['products'] as $p) {
+        if (cloudpe_cmp_product_is_cmp((int)($p['pid'] ?? 0))) { $hasCmp = true; break; }
+    }
+    if (!$hasCmp) return;
+
+    $pw = (string)($_POST['rootpassword'] ?? $_POST['rootpw'] ?? $_REQUEST['rootpassword'] ?? $_REQUEST['rootpw'] ?? '');
+    if ($pw === '') return;
+
+    $errors = [];
+    if (strlen($pw) < 12)                   $errors[] = 'at least 12 characters';
+    if (!preg_match('/[A-Z]/', $pw))        $errors[] = 'an uppercase letter';
+    if (!preg_match('/[a-z]/', $pw))        $errors[] = 'a lowercase letter';
+    if (!preg_match('/[0-9]/', $pw))        $errors[] = 'a number';
+    if (!preg_match('/[^A-Za-z0-9]/', $pw)) $errors[] = 'a special character';
+
+    if ($errors) {
+        return ['error' => 'Root Password must contain ' . implode(', ', $errors) . '.'];
+    }
+});
+
+/**
  * Hook: Hide nameserver prefix fields on the admin product-edit page
  * for CloudPe CMP products. WHMCS shows "Nameserver 1 Prefix" /
  * "Nameserver 2 Prefix" on the Details tab of every server-type

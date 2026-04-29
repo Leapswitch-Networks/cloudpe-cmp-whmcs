@@ -1,19 +1,22 @@
 {
-    "version": "1.1.1",
-    "released": "2026-04-22",
+    "version": "1.2.0",
+    "released": "2026-04-29",
     "min_whmcs_version": "8.0",
     "min_php_version": "7.4",
-    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.1.1/cloudpe-cmp-whmcs-module-v1.1.1.zip",
+    "download_url": "https://github.com/Leapswitch-Networks/cloudpe-cmp-whmcs/releases/download/v1.2.0/cloudpe-cmp-whmcs-module-v1.2.0.zip",
     "changelog": [
-        "Provisioning: sanitize UUIDs for security group / network / project config options; reject WHMCS placeholders like 'error'",
-        "Provisioning: volume_type sanitizer rejects numeric values so a stray disk size cannot be sent as volume_type",
-        "Provisioning: billing period validated against {monthly, hourly}; IP version against {ipv4, ipv6, both}",
-        "Provisioning: region resolution prefers the flavor's saved region over the admin default region",
-        "API: createInstance now forwards region_id, network_id, and ip_version when set",
-        "API: listProjects accepts an optional regionId filter",
-        "Admin: global Server + Region selector shared across all tabs",
-        "Admin: Images / Flavors tabs load from the currently selected region only (previously iterated every region)",
-        "Admin: Additional tab reloads projects when the region changes",
-        "Admin: row numbers only count visible rows after region filtering"
+        "Region-scoped data model: images, flavors, projects, volume types stored per region",
+        "New Regions tab — admin curates which regions are exposed on the cart; only regions with all four resources configured are eligible",
+        "Module Settings layout: Default Region | Default Server Size / Default Disk Space | Default Operating System; advanced mode renders text inputs pre-filled with stored IDs",
+        "Default Region dropdown reads from admin Regions tab and shows display names",
+        "Volume Type removed from Module Settings — picked per region in the admin addon",
+        "Cart cascade: Region drives OS/Server Size filtering; only admin-allowed regions appear in the cart",
+        "Hostname passed verbatim to CMP (no silent dot→hyphen mutation); RFC 1123 validator on cart",
+        "Root password policy hint on cart and on the service detail Reset Password modal (12+ chars, upper/lower/digit/special)",
+        "createInstance payload reshaped to match CMP /instances: { name, password, region_id, project_id, flavor_id, image_id, volume:{size_gb,volume_type}, billing_cycle:'monthly' }",
+        "Service detail: Server Information panel reads CMP top-level fields (flavor_name, vcpus, ram_mb, disk_gb, ip_address)",
+        "Provisioning resolves flavor/image openstack_id from the region listing before sending to CMP",
+        "Admin addon: sortable Images / Flavors / Regions tables, confirm on select-all uncheck, Regions tab uses explicit Load from API",
+        "Manual Install panel temporarily disabled in the Updates tab"
     ]
 }
